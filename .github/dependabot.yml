@@ -17,6 +17,7 @@ updates:
       # Batch all non-security Rust dep bumps into a single weekly PR.
       rust-dependencies:
         update-types:
+          - major
           - minor
           - patch
 
