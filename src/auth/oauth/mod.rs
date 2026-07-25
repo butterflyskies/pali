@@ -321,15 +321,7 @@ mod tests {
             self.scopes
         }
         fn validate(&self) -> Result<(), MemoryError> {
-            if self.client_id.is_empty() {
-                return Err(MemoryError::OAuth("client ID must not be empty".into()));
-            }
-            if self.client_id.len() < 4 || self.client_id.len() > 64 {
-                return Err(MemoryError::OAuth(format!(
-                    "client ID has unexpected length ({})",
-                    self.client_id.len()
-                )));
-            }
+            github::validate_github_client_id(self.client_id)?;
             validate_endpoint_url(self.device_code_url, "device_code_url")?;
             validate_endpoint_url(self.access_token_url, "access_token_url")?;
             Ok(())
