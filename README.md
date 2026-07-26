@@ -1,17 +1,25 @@
-# memory-mcp
+# Pāli
 
 Durable, local-first memory for AI agents.
 
-memory-mcp gives any [Model Context Protocol](https://modelcontextprotocol.io/)
+> **Pāli** (Sanskrit/Prakrit): the sacred language in which the Buddhist canon
+> was preserved — a language of durable, transmitted teachings.
+> **páli** (Greek πάλι): *again* — read again, written again, reconstructed again.
+> Named from **palimpsest**: a manuscript written over previous text, layers
+> still visible through the revisions.
+>
+> Built with love by [butterflyskies](https://github.com/butterflyskies).
+
+Pāli gives any [Model Context Protocol](https://modelcontextprotocol.io/)
 client a memory it can inspect, search, and carry between sessions. Memories stay
 as Markdown in a git repository you control. Retrieval combines local semantic
 embeddings with BM25 keyword search, so both concepts and exact phrases can find
 their way back.
 
-## Why memory-mcp?
+## Why Pāli?
 
 Agents forget the useful parts of yesterday: project decisions, debugging clues,
-working preferences, and the reason a strange constraint exists. memory-mcp turns
+working preferences, and the reason a strange constraint exists. Pāli turns
 that context into a durable system instead of another prompt appendix.
 
 - **Own the source of truth.** Memories are readable Markdown files with git
@@ -30,12 +38,12 @@ that context into a durable system instead of another prompt appendix.
 Install and start the server:
 
 ```bash
-cargo install memory-mcp
-memory-mcp serve
+cargo install pali
+pali serve
 ```
 
 The first run downloads the embedding model (about 130 MB) from Hugging Face.
-Run `memory-mcp warmup` first if you want to populate the model cache ahead of
+Run `pali warmup` first if you want to populate the model cache ahead of
 time.
 
 Point an MCP client at the Streamable HTTP endpoint:
@@ -80,7 +88,7 @@ continue with [Getting started](docs/getting-started.md).
 
 ## What ships today
 
-memory-mcp exposes eleven MCP tools:
+Pāli exposes eleven MCP tools:
 
 | Job | Tools |
 |---|---|
@@ -106,7 +114,7 @@ behavior, and recall feedback.
 ## How it fits together
 
 ```text
-Agent ── Streamable HTTP ──▶ memory-mcp
+Agent ── Streamable HTTP ──▶ pāli
                                   │
                     ┌─────────────┼─────────────┐
                     ▼             ▼             ▼

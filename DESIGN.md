@@ -1,4 +1,4 @@
-# memory-mcp
+# Pāli
 
 A semantic memory system for AI coding agents, exposed as an MCP server. Memories are stored as files in a git repository, synced across devices via a private GitHub remote, and indexed for semantic retrieval.
 
@@ -38,7 +38,7 @@ The agent describes what it needs, and the system returns relevant memories rank
 
 ```
 ┌─────────────┐     ┌──────────────────┐     ┌─────────────┐
-│  AI Agent    │────▶│  memory-mcp      │────▶│  Memory Repo│
+│  AI Agent    │────▶│  pāli            │────▶│  Memory Repo│
 │  (Claude)    │◀────│  (MCP server)    │◀────│  (git)      │
 └─────────────┘     └──────────────────┘     └──────┬──────┘
                             │                        │

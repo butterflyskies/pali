@@ -1,4 +1,4 @@
-# Contributing to memory-mcp
+# Contributing to Pāli
 
 This project is a Rust MCP server with git-backed durable state and local
 retrieval indexes. Changes to storage, retrieval, wire contracts, or startup
@@ -7,11 +7,11 @@ testable, and explicit about compatibility.
 
 ## Set up a development checkout
 
-memory-mcp declares Rust 1.95 as its minimum supported version.
+Pāli declares Rust 1.95 as its minimum supported version.
 
 ```bash
-git clone https://github.com/butterflyskies/memory-mcp.git
-cd memory-mcp
+git clone https://github.com/butterflyskies/pali.git
+cd pali
 git config core.hooksPath .githooks
 cargo check
 ```
