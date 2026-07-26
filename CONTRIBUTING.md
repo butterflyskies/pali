@@ -1,4 +1,4 @@
-# Contributing to Pāli
+# Contributing to Pali
 
 This project is a Rust MCP server with git-backed durable state and local
 retrieval indexes. Changes to storage, retrieval, wire contracts, or startup
@@ -7,7 +7,7 @@ testable, and explicit about compatibility.
 
 ## Set up a development checkout
 
-Pāli declares Rust 1.95 as its minimum supported version.
+Pali declares Rust 1.95 as its minimum supported version.
 
 ```bash
 git clone https://github.com/butterflyskies/pali.git

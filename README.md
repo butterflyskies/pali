@@ -10,16 +10,16 @@ Durable, local-first memory for AI agents.
 >
 > Built with love by [butterflyskies](https://github.com/butterflyskies).
 
-Pāli gives any [Model Context Protocol](https://modelcontextprotocol.io/)
+Pali gives any [Model Context Protocol](https://modelcontextprotocol.io/)
 client a memory it can inspect, search, and carry between sessions. Memories stay
 as Markdown in a git repository you control. Retrieval combines local semantic
 embeddings with BM25 keyword search, so both concepts and exact phrases can find
 their way back.
 
-## Why Pāli?
+## Why Pali?
 
 Agents forget the useful parts of yesterday: project decisions, debugging clues,
-working preferences, and the reason a strange constraint exists. Pāli turns
+working preferences, and the reason a strange constraint exists. Pali turns
 that context into a durable system instead of another prompt appendix.
 
 - **Own the source of truth.** Memories are readable Markdown files with git
@@ -88,7 +88,7 @@ continue with [Getting started](docs/getting-started.md).
 
 ## What ships today
 
-Pāli exposes eleven MCP tools:
+Pali exposes the following MCP tools:
 
 | Job | Tools |
 |---|---|

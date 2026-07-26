@@ -1,6 +1,6 @@
 # MCP tool reference
 
-memory-mcp exposes eleven tools. Tool schemas returned during MCP discovery are
+Pali exposes the following tools. Tool schemas returned during MCP discovery are
 the authoritative machine-readable contract; this page explains how the tools
 fit together.
 

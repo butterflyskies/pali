@@ -1,10 +1,10 @@
-# Pāli documentation
+# Pali documentation
 
-The root [README](../README.md) explains why Pāli exists and gets a new
+The root [README](../README.md) explains why Pali exists and gets a new
 user to a working server. This directory holds the detail needed after that
 first success.
 
-## Use Pāli
+## Use Pali
 
 - [Getting started](getting-started.md) — install, start the server, create a
   first memory, and configure git sync
@@ -17,7 +17,7 @@ first success.
 - [Security](security.md) — trust boundaries, credentials, container hardening,
   and supply-chain controls
 
-## Understand and change Pāli
+## Understand and change Pali
 
 - [Contributing](../CONTRIBUTING.md) — development setup, required checks,
   design records, and pull request expectations

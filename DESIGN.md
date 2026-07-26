@@ -1,4 +1,4 @@
-# Pāli
+# Pali
 
 A semantic memory system for AI coding agents, exposed as an MCP server. Memories are stored as files in a git repository, synced across devices via a private GitHub remote, and indexed for semantic retrieval.
 
