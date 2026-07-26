@@ -1,0 +1,31 @@
+name: Changelog
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  check:
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip-changelog') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Require CHANGELOG.md update when src/ changes
+        run: |
+          changed=$(git diff --name-only origin/main...HEAD)
+          if echo "$changed" | grep -q '^src/'; then
+            if echo "$changed" | grep -q '^CHANGELOG.md$'; then
+              echo "✅ src/ changed and CHANGELOG.md updated."
+            else
+              echo "::error::This PR modifies src/ but doesn't update CHANGELOG.md. Add a changelog entry under [Unreleased] or apply the 'skip-changelog' label."
+              exit 1
+            fi
+          else
+            echo "✅ No src/ changes — changelog not required."
+          fi
