@@ -1,12 +1,12 @@
 [package]
-name = "memory-mcp"
+name = "pali"
 version = "0.17.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "MCP server for semantic memory — pure-Rust embeddings, vector search, git-backed storage"
-repository = "https://github.com/butterflyskies/memory-mcp"
-homepage = "https://github.com/butterflyskies/memory-mcp"
-keywords = ["mcp", "memory", "embeddings", "semantic-search"]
+description = "Pali — semantic memory server for AI agents. Pure-Rust embeddings, hybrid retrieval, git-backed storage."
+repository = "https://github.com/butterflyskies/pali"
+homepage = "https://github.com/butterflyskies/pali"
+keywords = ["mcp", "memory", "embeddings", "semantic-search", "pali"]
 categories = ["command-line-utilities", "artificial-intelligence", "text-processing"]
 rust-version = "1.95"
 

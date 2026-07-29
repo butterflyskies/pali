@@ -1,9 +1,9 @@
-# memory-mcp Roadmap
+# Pali Roadmap
 
-> Canonical source of truth for the memory-mcp development plan.
-> Updated with each epic completion. See the [pinned roadmap issue](https://github.com/butterflyskies/memory-mcp/issues/132) for discussion.
+> Canonical source of truth for the Pali development plan.
+> Updated with each epic completion. See the [pinned roadmap issue](https://github.com/butterflyskies/pali/issues/132) for discussion.
 
-## What memory-mcp is
+## What Pali is
 
 A hybrid memory system for AI coding agents. Memories are stored as markdown files in a git repository, indexed locally for semantic and BM25 lexical retrieval, and synced to a remote. It ships as a single Rust binary speaking MCP over Streamable HTTP.
 
@@ -20,7 +20,7 @@ The project has moved from phase-based planning to **value-based epics**. The ol
 ### Retrieval Quality
 Make recall find the right thing.
 
-The highest-priority epic. memory-mcp#262 (HyperMem bridge — graph-aware chunk index) is the current focus, providing a path to structured chunking and hybrid retrieval without rewriting the existing index.
+The highest-priority epic. Pali#262 (HyperMem bridge — graph-aware chunk index) is the current focus, providing a path to structured chunking and hybrid retrieval without rewriting the existing index.
 
 | Issue | Title | Status |
 |-------|-------|--------|
@@ -51,7 +51,7 @@ The `mark_applied` feedback loop is live. This epic builds on it with structured
 ### Multi-Agent Access Control
 Support multiple identities with scope isolation.
 
-Enables different agents to share a memory-mcp instance without leaking across scope boundaries.
+Enables different agents to share a Pali instance without leaking across scope boundaries.
 
 | Issue | Title | Status |
 |-------|-------|--------|
@@ -125,7 +125,7 @@ Stdio transport for local single-user deployments, non-GitHub remote support, an
 | #150 | Periodic background sync | Open |
 
 ### Agent Workflow
-Tooling for how agents use memory-mcp.
+Tooling for how agents use Pali.
 
 Compaction hooks, migration paths, CLI access, and internal code quality.
 
