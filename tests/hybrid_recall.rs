@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use memory_mcp::{
+use pali::{
     embedding::EmbeddingBackend,
     error::MemoryError,
     index::{InMemoryStore, VectorStore},

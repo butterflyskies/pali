@@ -6,8 +6,8 @@
 
 use std::sync::Arc;
 
-use memory_mcp::repo::MemoryRepo;
-use memory_mcp::types::{Memory, MemoryMetadata, Scope, ScopePath};
+use pali::repo::MemoryRepo;
+use pali::types::{Memory, MemoryMetadata, Scope, ScopePath};
 
 fn path(s: &str) -> Scope {
     Scope::Path(ScopePath::new(s).unwrap())

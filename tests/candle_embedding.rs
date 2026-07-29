@@ -6,8 +6,8 @@
 
 use std::time::Duration;
 
-use memory_mcp::embedding::{CandleEmbeddingEngine, EmbeddingBackend};
-use memory_mcp::health::SubsystemReporter;
+use pali::embedding::{CandleEmbeddingEngine, EmbeddingBackend};
+use pali::health::SubsystemReporter;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(60);
 
