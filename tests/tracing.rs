@@ -278,8 +278,8 @@ fn canonical_fields() -> HashSet<&'static str> {
 
 #[test]
 fn index_add_span_has_correct_name() {
-    use memory_mcp::index::{UsearchStore, VectorStore};
-    use memory_mcp::types::Scope;
+    use pali::index::{UsearchStore, VectorStore};
+    use pali::types::Scope;
 
     let (_, store) = with_capturing(|| {
         let idx = UsearchStore::new(4).expect("create index");
@@ -296,8 +296,8 @@ fn index_add_span_has_correct_name() {
 
 #[test]
 fn index_remove_span_has_correct_name() {
-    use memory_mcp::index::{UsearchStore, VectorStore};
-    use memory_mcp::types::Scope;
+    use pali::index::{UsearchStore, VectorStore};
+    use pali::types::Scope;
 
     let (_, store) = with_capturing(|| {
         let idx = UsearchStore::new(4).expect("create index");
@@ -315,8 +315,8 @@ fn index_remove_span_has_correct_name() {
 
 #[test]
 fn index_search_span_has_correct_name() {
-    use memory_mcp::index::{UsearchStore, VectorStore};
-    use memory_mcp::types::{Scope, ScopeFilter};
+    use pali::index::{UsearchStore, VectorStore};
+    use pali::types::{Scope, ScopeFilter};
 
     let (_, store) = with_capturing(|| {
         let idx = UsearchStore::new(4).expect("create index");
@@ -334,8 +334,8 @@ fn index_search_span_has_correct_name() {
 
 #[test]
 fn index_save_load_spans_have_correct_names() {
-    use memory_mcp::index::{UsearchStore, VectorStore};
-    use memory_mcp::types::Scope;
+    use pali::index::{UsearchStore, VectorStore};
+    use pali::types::Scope;
 
     let dir = tempfile::tempdir().expect("tempdir");
     let (_, store) = with_capturing(|| {
@@ -363,8 +363,8 @@ fn index_save_load_spans_have_correct_names() {
 
 #[test]
 fn index_spans_only_use_canonical_fields() {
-    use memory_mcp::index::{UsearchStore, VectorStore};
-    use memory_mcp::types::{Scope, ScopeFilter};
+    use pali::index::{UsearchStore, VectorStore};
+    use pali::types::{Scope, ScopeFilter};
 
     let dir = tempfile::tempdir().expect("tempdir");
     let allowed = canonical_fields();
@@ -407,8 +407,8 @@ fn index_spans_only_use_canonical_fields() {
 
 #[test]
 fn index_add_span_has_scope_and_dimensions_fields() {
-    use memory_mcp::index::{UsearchStore, VectorStore};
-    use memory_mcp::types::Scope;
+    use pali::index::{UsearchStore, VectorStore};
+    use pali::types::Scope;
 
     let (_, store) = with_capturing(|| {
         let idx = UsearchStore::new(8).expect("create index");
@@ -442,8 +442,8 @@ fn index_add_span_has_scope_and_dimensions_fields() {
 
 #[test]
 fn index_search_span_has_required_fields() {
-    use memory_mcp::index::{UsearchStore, VectorStore};
-    use memory_mcp::types::{Scope, ScopeFilter};
+    use pali::index::{UsearchStore, VectorStore};
+    use pali::types::{Scope, ScopeFilter};
 
     let (_, store) = with_capturing(|| {
         let idx = UsearchStore::new(4).expect("create index");
@@ -482,8 +482,8 @@ fn index_search_span_has_required_fields() {
 
 #[test]
 fn index_save_span_has_key_count_field() {
-    use memory_mcp::index::{UsearchStore, VectorStore};
-    use memory_mcp::types::Scope;
+    use pali::index::{UsearchStore, VectorStore};
+    use pali::types::Scope;
 
     let dir = tempfile::tempdir().expect("tempdir");
     let (_, store) = with_capturing(|| {
@@ -511,7 +511,7 @@ fn index_save_span_has_key_count_field() {
 
 #[test]
 fn auth_resolution_never_logs_token_value() {
-    use memory_mcp::auth::AuthProvider;
+    use pali::auth::AuthProvider;
 
     let token_value = "ghp_super_secret_test_token_12345";
     let (_, store) = with_capturing(|| {
@@ -557,7 +557,7 @@ fn auth_resolution_never_logs_token_value() {
 
 #[test]
 fn repo_init_url_is_redacted_in_logs() {
-    use memory_mcp::repo::MemoryRepo;
+    use pali::repo::MemoryRepo;
 
     // Use a URL containing a fake credential.
     // git2 file:// URLs don't contain userinfo, but let's verify our
@@ -603,8 +603,8 @@ fn repo_init_url_is_redacted_in_logs() {
 
 #[test]
 fn push_failure_does_not_leak_token() {
-    use memory_mcp::auth::AuthProvider;
-    use memory_mcp::repo::MemoryRepo;
+    use pali::auth::AuthProvider;
+    use pali::repo::MemoryRepo;
     use std::sync::Arc;
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -658,8 +658,8 @@ fn push_failure_does_not_leak_token() {
 #[test]
 fn debug_spans_are_filtered_when_only_info_enabled() {
     require_nextest();
-    use memory_mcp::index::{UsearchStore, VectorStore};
-    use memory_mcp::types::Scope;
+    use pali::index::{UsearchStore, VectorStore};
+    use pali::types::Scope;
 
     // --- Baseline: verify index.* spans DO appear under DEBUG filter ---
     let baseline_store = Arc::new(Mutex::new(RecordStore::default()));
@@ -721,8 +721,8 @@ fn debug_spans_are_filtered_when_only_info_enabled() {
 
 #[test]
 fn repo_save_span_has_name_and_oid_fields() {
-    use memory_mcp::repo::MemoryRepo;
-    use memory_mcp::types::{Memory, MemoryMetadata, Scope};
+    use pali::repo::MemoryRepo;
+    use pali::types::{Memory, MemoryMetadata, Scope};
     use std::sync::Arc;
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -773,8 +773,8 @@ fn repo_save_span_has_name_and_oid_fields() {
 
 #[test]
 fn repo_delete_span_has_name_and_oid_fields() {
-    use memory_mcp::repo::MemoryRepo;
-    use memory_mcp::types::{Memory, MemoryMetadata, Scope};
+    use pali::repo::MemoryRepo;
+    use pali::types::{Memory, MemoryMetadata, Scope};
     use std::sync::Arc;
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -828,8 +828,8 @@ fn repo_delete_span_has_name_and_oid_fields() {
 
 #[test]
 fn repo_save_does_not_log_content_text() {
-    use memory_mcp::repo::MemoryRepo;
-    use memory_mcp::types::{Memory, MemoryMetadata, Scope};
+    use pali::repo::MemoryRepo;
+    use pali::types::{Memory, MemoryMetadata, Scope};
     use std::sync::Arc;
 
     let dir = tempfile::tempdir().expect("tempdir");

@@ -2203,60 +2203,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "memory-mcp"
-version = "0.17.1"
-dependencies = [
- "anyhow",
- "arc-swap",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "candle-core",
- "candle-nn",
- "candle-transformers",
- "chrono",
- "clap",
- "dirs",
- "git2",
- "hf-hub",
- "http",
- "k8s-openapi",
- "keyring",
- "kube",
- "libc",
- "libz-sys",
- "mcp-session",
- "openssl",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "portpicker",
- "proptest",
- "reqwest 0.12.28",
- "rmcp",
- "rusqlite",
- "secrecy",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "sha2",
- "tantivy",
- "tempfile",
- "thiserror 2.0.19",
- "tokenizers 0.23.1",
- "tokio",
- "tokio-util",
- "toml",
- "tower",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "ureq 2.12.1",
- "usearch",
- "uuid",
-]
-
-[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2586,6 +2532,60 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2fbd56f7631767e61784dc43f8580f403f4475bd4aaa4da003e6295e1bab4a7e"
 dependencies = [
  "stable_deref_trait",
+]
+
+[[package]]
+name = "pali"
+version = "0.17.1"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "chrono",
+ "clap",
+ "dirs",
+ "git2",
+ "hf-hub",
+ "http",
+ "k8s-openapi",
+ "keyring",
+ "kube",
+ "libc",
+ "libz-sys",
+ "mcp-session",
+ "openssl",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "portpicker",
+ "proptest",
+ "reqwest 0.12.28",
+ "rmcp",
+ "rusqlite",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "sha2",
+ "tantivy",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokenizers 0.23.1",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "ureq 2.12.1",
+ "usearch",
+ "uuid",
 ]
 
 [[package]]

@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use memory_mcp::auth::{device_flow_login, DeviceFlowProvider, StoreBackend};
-use memory_mcp::error::MemoryError;
+use pali::auth::{device_flow_login, DeviceFlowProvider, StoreBackend};
+use pali::error::MemoryError;
 
 // ---------------------------------------------------------------------------
 // Mock DeviceFlowProvider
@@ -306,7 +306,7 @@ async fn auth_login_device_flow_slow_down_backoff() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn memory_mcp_bind_env_var_sets_listen_address() {
+async fn pali_bind_env_var_sets_listen_address() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let repo_path = tmp.path().to_str().expect("non-utf8 temp path");
     let port = portpicker::pick_unused_port().expect("no free port");

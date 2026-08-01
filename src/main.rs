@@ -1,4 +1,4 @@
-//! Thin CLI wrapper around the [`memory_mcp`] library crate.
+//! Thin CLI wrapper around the [`pali`] library crate.
 
 use std::{path::PathBuf, sync::Arc};
 
@@ -15,14 +15,14 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[cfg(feature = "otlp")]
 use opentelemetry_sdk::trace::SdkTracerProvider as OtlpProvider;
 
-use memory_mcp::auth::{self, AuthProvider, StoreBackend};
-use memory_mcp::embedding::{CandleEmbeddingEngine, EmbeddingBackend, MODEL_ID};
-use memory_mcp::health::{healthz_handler, readyz_handler, version_handler, HealthRegistry};
-use memory_mcp::index::{UsearchStore, VectorStore};
-use memory_mcp::recall_log::RecallLog;
-use memory_mcp::repo::MemoryRepo;
-use memory_mcp::server::MemoryServer;
-use memory_mcp::types::{validate_branch_name, AppState};
+use pali::auth::{self, AuthProvider, StoreBackend};
+use pali::embedding::{CandleEmbeddingEngine, EmbeddingBackend, MODEL_ID};
+use pali::health::{healthz_handler, readyz_handler, version_handler, HealthRegistry};
+use pali::index::{UsearchStore, VectorStore};
+use pali::recall_log::RecallLog;
+use pali::repo::MemoryRepo;
+use pali::server::MemoryServer;
+use pali::types::{validate_branch_name, AppState};
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -240,7 +240,7 @@ struct EmbedArgs {
 
 /// Initialise the global tracing subscriber.
 ///
-/// Default build: Registry + EnvFilter (`memory_mcp=info` default) + fmt(stderr).
+/// Default build: Registry + EnvFilter (`pali=info` default) + fmt(stderr).
 /// `otlp` feature: same + OpenTelemetry layer with BatchSpanProcessor.
 ///
 /// Returns the OTLP tracer provider when the `otlp` feature is enabled, so the
@@ -250,7 +250,7 @@ fn init_tracing() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "memory_mcp=info,warn".to_string().into()),
+                .unwrap_or_else(|_| "pali=info,warn".to_string().into()),
         )
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .init();
@@ -264,7 +264,7 @@ fn init_tracing_fmt_only() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "memory_mcp=info,warn".to_string().into()),
+                .unwrap_or_else(|_| "pali=info,warn".to_string().into()),
         )
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .init();
@@ -546,7 +546,7 @@ fn init_tracing_for_serve(args: &ServeArgs) -> Option<OtlpProvider> {
     use tracing_opentelemetry::OpenTelemetryLayer;
 
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "memory_mcp=info,warn".to_string().into());
+        .unwrap_or_else(|_| "pali=info,warn".to_string().into());
 
     let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
 
@@ -717,7 +717,7 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     // round 5: a symlink-plus-`..` spelling otherwise opens one physical
     // repo while collision detection records another).
     let repo_path = expand_path(&args.repo_path)?;
-    let repo_path = memory_mcp::fs_util::canonicalize_allow_missing(&repo_path)
+    let repo_path = pali::fs_util::canonicalize_allow_missing(&repo_path)
         .context("failed to canonicalize repo path")?;
     info!("repo path: {}", repo_path.display());
 
@@ -782,16 +782,16 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
         let config_path = match &args.config {
             Some(p) if p.is_empty() => None,
             Some(p) => Some(expand_path(p)?),
-            None => memory_mcp::config::Config::resolve_path().ok(),
+            None => pali::config::Config::resolve_path().ok(),
         };
 
         if let Some(ref path) = config_path {
-            let config = memory_mcp::config::Config::load(path)
+            let config = pali::config::Config::load(path)
                 .with_context(|| format!("failed to load config from {}", path.display()))?;
             if config.remotes.is_empty() {
-                memory_mcp::repo_router::RepoRouter::single(Arc::clone(&repo))
+                pali::repo_router::RepoRouter::single(Arc::clone(&repo))
             } else {
-                memory_mcp::repo_router::RepoRouter::from_config(
+                pali::repo_router::RepoRouter::from_config(
                     Arc::clone(&repo),
                     &config.remotes,
                     &health.git,
@@ -800,7 +800,7 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
                 .context("failed to initialise scope-specific repos from config")?
             }
         } else {
-            memory_mcp::repo_router::RepoRouter::single(Arc::clone(&repo))
+            pali::repo_router::RepoRouter::single(Arc::clone(&repo))
         }
     };
 
@@ -829,7 +829,7 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
         (args.require_remote_sync && remote_url.is_some()).then_some((&auth, args.branch.as_str()));
 
     let vector_reporter = health.vector_index.clone();
-    let (index, reindex_ok) = memory_mcp::server::startup_prepare_index(
+    let (index, reindex_ok) = pali::server::startup_prepare_index(
         initial_pull,
         &router,
         embedding.as_ref(),
@@ -894,7 +894,7 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     // text is cheap, unlike embedding it — so it is rebuilt from the repo on
     // every startup and never persisted or migrated. Failure degrades recall
     // to semantic-only; it never blocks startup.
-    match memory_mcp::search::rebuild_lexical_from_router(&state.router, &state.lexical)
+    match pali::search::rebuild_lexical_from_router(&state.router, &state.lexical)
         .instrument(tracing::info_span!("startup.lexical_rebuild"))
         .await
     {
@@ -911,7 +911,7 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
                 "lexical index startup rebuild failed — keyword search \
                  degraded until background repair converges"
             );
-            memory_mcp::search::spawn_lexical_repair_for_router(&state.router, &state.lexical);
+            pali::search::spawn_lexical_repair_for_router(&state.router, &state.lexical);
         }
     }
 
@@ -998,9 +998,7 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     // reindex. The stored SHA only advances when the in-process mirror is
     // intact — a recorded mirror gap keeps the last verified SHA so the next
     // startup rebuilds from git truth.
-    if let Err(e) =
-        memory_mcp::server::persist_index_on_shutdown(&state_for_shutdown, &index_dir).await
-    {
+    if let Err(e) = pali::server::persist_index_on_shutdown(&state_for_shutdown, &index_dir).await {
         tracing::warn!("failed to persist vector index on shutdown: {}", e);
     } else {
         info!("vector index saved to {}", index_dir.display());
@@ -1068,7 +1066,7 @@ fn run_recall_stats(args: RecallStatsArgs) -> anyhow::Result<()> {
 /// Load the embedding model and run a single dummy embed to warm the on-disk
 /// model cache, then exit. Intended for use as a Kubernetes init container.
 async fn run_warmup(args: WarmupArgs) -> anyhow::Result<()> {
-    use memory_mcp::health::SubsystemReporter;
+    use pali::health::SubsystemReporter;
     info!("warming up embedding model '{}'", MODEL_ID);
     let engine = CandleEmbeddingEngine::new(
         std::time::Duration::from_secs(args.embed.embed_timeout_secs),
@@ -1113,7 +1111,7 @@ fn parse_nonzero_u64(s: &str) -> Result<u64, String> {
 }
 
 fn expand_path(path: &str) -> anyhow::Result<PathBuf> {
-    memory_mcp::fs_util::expand_tilde(path).map_err(|e| anyhow::anyhow!("{e}"))
+    pali::fs_util::expand_tilde(path).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 // ---------------------------------------------------------------------------

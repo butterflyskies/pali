@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use mcp_session::BoundedSessionManagerBuilder;
-use memory_mcp::{
+use pali::{
     auth::AuthProvider,
     embedding::EmbeddingBackend,
     error::MemoryError,

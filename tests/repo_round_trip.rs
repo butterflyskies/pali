@@ -6,11 +6,11 @@
 
 use std::sync::Arc;
 
-use memory_mcp::auth::AuthProvider;
+use pali::auth::AuthProvider;
 #[cfg(unix)]
-use memory_mcp::error::MemoryError;
-use memory_mcp::repo::MemoryRepo;
-use memory_mcp::types::{Memory, MemoryMetadata, MemoryName, PullResult, Scope};
+use pali::error::MemoryError;
+use pali::repo::MemoryRepo;
+use pali::types::{Memory, MemoryMetadata, MemoryName, PullResult, Scope};
 
 /// Full round-trip: init repo → save memory → read it back → list → delete → pull.
 ///
@@ -370,7 +370,7 @@ async fn init_accepts_dot_dot_over_missing_component_in_repo_path() {
     let spelled = tmp.path().join("missing/../repo");
 
     // Mirrors `run_serve`: canonicalize before opening.
-    let resolved = memory_mcp::fs_util::canonicalize_allow_missing(&spelled)
+    let resolved = pali::fs_util::canonicalize_allow_missing(&spelled)
         .expect("previously valid spelling must canonicalize");
     assert_eq!(resolved, existing.join("repo"));
 

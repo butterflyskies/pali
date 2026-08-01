@@ -8,7 +8,7 @@ mod common;
 
 use axum::body::{to_bytes, Body};
 use http::Request;
-use memory_mcp::health::HealthRegistry;
+use pali::health::HealthRegistry;
 use tower::ServiceExt as _;
 
 // ---------------------------------------------------------------------------
