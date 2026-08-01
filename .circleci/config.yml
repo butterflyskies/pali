@@ -1,0 +1,324 @@
+# Temporary hosted-CI bridge while GitHub Actions is unavailable.
+#
+# Project setup:
+# - Trigger this pipeline for pull requests and pushes to the default branch.
+# - Enable Project Settings > Advanced > Auto-cancel redundant workflows.
+#
+# This pipeline intentionally performs no release, tag, registry, or publish mutation.
+version: 2.1
+
+executors:
+  linux:
+    docker:
+      - image: cimg/base:stable
+    resource_class: medium
+  macos:
+    macos:
+      xcode: 26.4.1
+    resource_class: m4pro.medium
+
+commands:
+  install_linux_dependencies:
+    steps:
+      - run:
+          name: Install system dependencies
+          command: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+
+  install_rust:
+    parameters:
+      toolchain:
+        type: string
+        default: stable
+      components:
+        type: string
+        default: ""
+    steps:
+      - run:
+          name: Install Rust << parameters.toolchain >>
+          command: |
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --profile minimal --default-toolchain << parameters.toolchain >>
+            echo 'source "$HOME/.cargo/env"' >> "$BASH_ENV"
+            source "$HOME/.cargo/env"
+            if [ -n "<< parameters.components >>" ]; then
+              rustup component add --toolchain << parameters.toolchain >> << parameters.components >>
+            fi
+
+  restore_cargo_cache:
+    parameters:
+      toolchain:
+        type: string
+      features:
+        type: string
+    steps:
+      - restore_cache:
+          keys:
+            - v1-cargo-<< parameters.toolchain >>-<< parameters.features >>-{{ checksum "Cargo.lock" }}
+            - v1-cargo-<< parameters.toolchain >>-<< parameters.features >>-
+
+  save_cargo_cache:
+    parameters:
+      toolchain:
+        type: string
+      features:
+        type: string
+    steps:
+      - save_cache:
+          key: v1-cargo-<< parameters.toolchain >>-<< parameters.features >>-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/git
+            - ~/.cargo/registry
+            - target
+
+jobs:
+  lint:
+    executor: linux
+    steps:
+      - checkout
+      - install_linux_dependencies
+      - install_rust:
+          components: rustfmt
+      - restore_cargo_cache:
+          toolchain: stable
+          features: lint-default
+      - run:
+          name: Check formatting
+          command: cargo fmt --check
+      - run:
+          name: Verify no opentelemetry in default build
+          command: |
+            if cargo tree 2>&1 | grep -i opentelemetry; then
+              echo "ERROR: opentelemetry appeared in default build tree" >&2
+              exit 1
+            fi
+            echo "OK: opentelemetry not present in default build"
+      - save_cargo_cache:
+          toolchain: stable
+          features: lint-default
+
+  clippy:
+    parameters:
+      feature_set:
+        type: enum
+        enum: [default, k8s, otlp, native-certs, all]
+    executor: linux
+    steps:
+      - checkout
+      - install_linux_dependencies
+      - install_rust:
+          components: clippy
+      - restore_cargo_cache:
+          toolchain: stable
+          features: clippy-<< parameters.feature_set >>
+      - run:
+          name: Clippy (<< parameters.feature_set >>)
+          command: |
+            case "<< parameters.feature_set >>" in
+              default) cargo clippy --workspace -- -D warnings ;;
+              k8s) cargo clippy --workspace --features k8s -- -D warnings ;;
+              otlp) cargo clippy --workspace --features otlp -- -D warnings ;;
+              native-certs) cargo clippy --workspace --features native-certs -- -D warnings ;;
+              all) cargo clippy --workspace --all-features -- -D warnings ;;
+            esac
+      - save_cargo_cache:
+          toolchain: stable
+          features: clippy-<< parameters.feature_set >>
+
+  test:
+    parameters:
+      feature_set:
+        type: enum
+        enum: [default, k8s, otlp, all]
+    executor: linux
+    steps:
+      - checkout
+      - install_linux_dependencies
+      - install_rust
+      - restore_cargo_cache:
+          toolchain: stable
+          features: test-<< parameters.feature_set >>
+      - restore_cache:
+          keys:
+            - v1-hf-model-{{ checksum "src/embedding/candle.rs" }}
+            - v1-hf-model-
+      - run:
+          name: Install cargo-nextest 0.9.136
+          command: |
+            curl -fsSL "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.136/cargo-nextest-0.9.136-x86_64-unknown-linux-gnu.tar.gz" \
+              -o /tmp/cargo-nextest.tar.gz
+            echo "a098eed56f2dd88c7fdca1e554a6b99fa1ffbd2a7a1c41b865700112981f6f52  /tmp/cargo-nextest.tar.gz" | sha256sum -c -
+            tar xzf /tmp/cargo-nextest.tar.gz -C "$HOME/.cargo/bin"
+      - run:
+          name: Nextest (<< parameters.feature_set >>)
+          command: |
+            case "<< parameters.feature_set >>" in
+              default) cargo nextest run --workspace --no-fail-fast ;;
+              k8s) cargo nextest run --workspace --no-fail-fast --features k8s ;;
+              otlp) cargo nextest run --workspace --no-fail-fast --features otlp ;;
+              all) cargo nextest run --workspace --no-fail-fast --all-features ;;
+            esac
+      - save_cache:
+          key: v1-hf-model-{{ checksum "src/embedding/candle.rs" }}
+          paths:
+            - ~/.cache/huggingface
+      - save_cargo_cache:
+          toolchain: stable
+          features: test-<< parameters.feature_set >>
+
+  cross_compile_linux:
+    executor: linux
+    steps:
+      - checkout
+      - install_linux_dependencies
+      - install_rust
+      - restore_cargo_cache:
+          toolchain: stable
+          features: release-k8s-x86_64-unknown-linux-gnu
+      - run:
+          name: Build Linux release binary
+          command: cargo build --release --features k8s
+      - persist_to_workspace:
+          root: .
+          paths:
+            - target/release/memory-mcp
+      - save_cargo_cache:
+          toolchain: stable
+          features: release-k8s-x86_64-unknown-linux-gnu
+
+  cross_compile_macos:
+    executor: macos
+    steps:
+      - checkout
+      - install_rust
+      - restore_cargo_cache:
+          toolchain: stable
+          features: release-k8s-apple-darwin
+      - run:
+          name: Build macOS release binary
+          command: cargo build --release --features k8s
+      - save_cargo_cache:
+          toolchain: stable
+          features: release-k8s-apple-darwin
+
+  docker_build:
+    executor: linux
+    steps:
+      - checkout
+      - setup_remote_docker
+      - attach_workspace:
+          at: /tmp/workspace
+      - run:
+          name: Prepare pre-built binary
+          command: |
+            mkdir -p .ci-bin
+            cp /tmp/workspace/target/release/memory-mcp .ci-bin/memory-mcp
+            chmod +x .ci-bin/memory-mcp
+      - run:
+          name: Validate CI container image
+          command: docker build --file Dockerfile.ci --tag pali:ci-validation .
+
+  msrv:
+    executor: linux
+    steps:
+      - checkout
+      - install_linux_dependencies
+      - install_rust:
+          toolchain: "1.95"
+      - restore_cargo_cache:
+          toolchain: "1.95"
+          features: msrv-all
+      - run:
+          name: Check declared MSRV
+          command: cargo +1.95 check --workspace --all-features
+      - save_cargo_cache:
+          toolchain: "1.95"
+          features: msrv-all
+
+  audit:
+    executor: linux
+    steps:
+      - checkout
+      - install_rust
+      - restore_cargo_cache:
+          toolchain: stable
+          features: audit-all
+      - run:
+          name: Install cargo-deny 0.20.2
+          command: cargo install --locked --version 0.20.2 cargo-deny
+      - run:
+          name: Check advisories, licenses, bans, and sources
+          command: cargo deny --all-features check
+      - save_cargo_cache:
+          toolchain: stable
+          features: audit-all
+
+  semver_checks:
+    executor: linux
+    steps:
+      - run:
+          name: Require pull request context
+          command: |
+            if [ -z "${CIRCLE_PULL_REQUEST:-}${CIRCLE_PULL_REQUESTS:-}" ]; then
+              echo "No CircleCI pull-request context; skipping PR-only semver checks."
+              circleci-agent step halt
+            fi
+      - checkout
+      - install_linux_dependencies
+      - install_rust
+      - restore_cargo_cache:
+          toolchain: stable
+          features: semver-default-k8s
+      - run:
+          name: Install cargo-semver-checks 0.48.0
+          command: cargo install --locked --version 0.48.0 cargo-semver-checks
+      - run:
+          name: Check default-feature API compatibility
+          command: cargo semver-checks check-release --default-features
+      - run:
+          name: Check explicit k8s API compatibility
+          command: cargo semver-checks check-release --only-explicit-features --features k8s
+      - save_cargo_cache:
+          toolchain: stable
+          features: semver-default-k8s
+
+workflows:
+  ci:
+    # CircleCI's integration-neutral config cannot reliably recover a PR's base
+    # branch. Configure triggers for PRs and default-branch pushes; stacked PRs
+    # may therefore receive the cross-platform and Docker checks too.
+    jobs:
+      - lint:
+          filters: &no_tags
+            tags:
+              ignore: /.*/
+      - clippy:
+          matrix:
+            parameters:
+              feature_set: [default, k8s, otlp, native-certs, all]
+          filters: *no_tags
+      - test:
+          matrix:
+            parameters:
+              feature_set: [default, k8s, otlp, all]
+          filters: *no_tags
+      - cross_compile_linux:
+          filters: *no_tags
+      - cross_compile_macos:
+          filters: *no_tags
+      - msrv:
+          filters: *no_tags
+      - audit:
+          filters: *no_tags
+      - semver_checks:
+          filters: *no_tags
+      - docker_build:
+          requires:
+            - lint
+            - clippy
+            - test
+            - cross_compile_linux
+            - cross_compile_macos
+            - msrv
+            - audit
+            - semver_checks
+          filters: *no_tags
