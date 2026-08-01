@@ -69,6 +69,9 @@ pub struct EditArgs {
     /// Scope of the memory. Defaults to 'global'. Use a bare namespace path like 'my-project' or 'org/team' for scoped memories.
     #[serde(default)]
     pub scope: Option<String>,
+    /// New source hint (replaces existing). Omit to keep current source.
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// Arguments for the `move` tool — relocate a memory between scopes.

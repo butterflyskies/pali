@@ -1426,12 +1426,13 @@ impl MemoryServer {
         .await
     }
 
-    /// Update the content or tags of an existing memory.
+    /// Update the content, tags, or source of an existing memory.
     ///
     /// Supports partial updates: omit `content` to keep the existing body,
-    /// omit `tags` to keep the existing tags. The `updated_at` timestamp is
-    /// refreshed, the change is committed to git, and the vector index is
-    /// updated with a fresh embedding.
+    /// omit `tags` to keep the existing tags, omit `source` to keep the
+    /// existing source hint. The `updated_at` timestamp is refreshed, the
+    /// change is committed to git, and the vector index is updated with a
+    /// fresh embedding.
     ///
     /// Returns the updated memory ID.
     #[tool(
@@ -1449,9 +1450,9 @@ impl MemoryServer {
     ) -> Result<String, ErrorData> {
         let mut timing = EditStageTiming::new();
         let name = MemoryName::new(args.name).map_err(ErrorData::from)?;
-        if args.content.is_none() && args.tags.is_none() {
+        if args.content.is_none() && args.tags.is_none() && args.source.is_none() {
             return Err(ErrorData::from(crate::error::MemoryError::InvalidInput {
-                reason: "nothing to update — provide content or tags".into(),
+                reason: "nothing to update — provide content, tags, or source".into(),
             }));
         }
         if let Some(ref content) = args.content {
@@ -1494,6 +1495,9 @@ impl MemoryServer {
             }
             if let Some(tags) = args.tags {
                 memory.metadata.tags = tags;
+            }
+            if let Some(source) = args.source {
+                memory.metadata.source = Some(source);
             }
             memory.metadata.updated_at = Utc::now();
 
@@ -3436,6 +3440,7 @@ mod tests {
                         content: Some("newword content".to_string()),
                         tags: None,
                         scope: None,
+                        source: None,
                     }),
                     Extension(parts()),
                 )
@@ -3449,6 +3454,94 @@ mod tests {
                 .search(&ScopeFilter::All, "oldword", 10)
                 .expect("post-repair search");
             assert!(stale.is_empty(), "stale content survived repair: {stale:?}");
+        }
+
+        #[tokio::test]
+        async fn edit_source_updates_persisted_source_metadata() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let state = test_state(&tmp);
+            let server = MemoryServer::new(Arc::clone(&state));
+
+            // Create a memory with an initial source.
+            server
+                .remember(
+                    Parameters(RememberArgs {
+                        content: "some content".to_string(),
+                        name: "src-test".to_string(),
+                        tags: vec![],
+                        scope: None,
+                        source: Some("original source".to_string()),
+                    }),
+                    Extension(parts()),
+                )
+                .await
+                .expect("remember");
+
+            // Edit only the source, leaving content and tags untouched.
+            server
+                .edit(
+                    Parameters(EditArgs {
+                        name: "src-test".to_string(),
+                        content: None,
+                        tags: None,
+                        scope: None,
+                        source: Some("updated source".to_string()),
+                    }),
+                    Extension(parts()),
+                )
+                .await
+                .expect("edit source");
+
+            // Verify the source was persisted and content unchanged.
+            let raw = server
+                .read(
+                    Parameters(ReadArgs {
+                        name: "src-test".to_string(),
+                        scope: None,
+                    }),
+                    Extension(parts()),
+                )
+                .await
+                .expect("read after edit");
+            let parsed: serde_json::Value = serde_json::from_str(&raw).expect("valid json");
+            assert_eq!(
+                parsed["source"], "updated source",
+                "source must reflect the edit"
+            );
+            assert_eq!(
+                parsed["content"], "some content",
+                "content must be preserved when only source is edited"
+            );
+        }
+
+        #[tokio::test]
+        async fn edit_rejects_empty_update_with_no_content_tags_or_source() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let state = test_state(&tmp);
+            let server = MemoryServer::new(Arc::clone(&state));
+
+            remember(&server, "empty-edit", "body")
+                .await
+                .expect("remember");
+
+            let err = server
+                .edit(
+                    Parameters(EditArgs {
+                        name: "empty-edit".to_string(),
+                        content: None,
+                        tags: None,
+                        scope: None,
+                        source: None,
+                    }),
+                    Extension(parts()),
+                )
+                .await
+                .expect_err("edit with nothing to update must fail");
+            let msg = err.message;
+            assert!(
+                msg.contains("nothing to update"),
+                "error must mention empty update: {msg}"
+            );
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3693,6 +3786,7 @@ mod tests {
                             content: Some("newword content".to_string()),
                             tags: None,
                             scope: None,
+                            source: None,
                         }),
                         Extension(parts()),
                     )
