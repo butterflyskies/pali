@@ -458,6 +458,36 @@ where
 // Incremental reindex helper
 // ---------------------------------------------------------------------------
 
+/// Whether splitting a failed batch into individual requests can isolate the
+/// failure.
+///
+/// Worker lifecycle and queueing failures affect every item equally. A
+/// per-item fallback would only enqueue duplicate work behind the same slow or
+/// unavailable worker, amplifying one failure into a timeout cascade. An
+/// active inference timeout remains splittable: the batch itself may simply
+/// have exceeded the deadline while smaller requests can complete in time.
+fn batch_failure_can_split(error: &MemoryError) -> bool {
+    !matches!(
+        error,
+        MemoryError::EmbeddingQueueTimeout { .. }
+            | MemoryError::EmbeddingWorkerBusy
+            | MemoryError::EmbeddingWorkerUnavailable { .. }
+    )
+}
+
+/// Whether a singleton fallback failure means the remaining retries would
+/// only queue behind the same unhealthy worker. An inference timeout is also
+/// terminal here: a one-item request cannot be split any further.
+fn fallback_failure_stops_retries(error: &MemoryError) -> bool {
+    matches!(
+        error,
+        MemoryError::EmbeddingQueueTimeout { .. }
+            | MemoryError::EmbeddingInferenceTimeout { .. }
+            | MemoryError::EmbeddingWorkerBusy
+            | MemoryError::EmbeddingWorkerUnavailable { .. }
+    )
+}
+
 /// Re-embed and re-index all memories that changed between two commits.
 ///
 /// Removals are processed first so a name that was deleted and re-added in
@@ -562,6 +592,22 @@ async fn incremental_reindex(
     let contents: Vec<String> = to_embed.iter().map(|(_, c)| c.clone()).collect();
     let vectors = match embedding.embed(&contents).await {
         Ok(v) => v,
+        Err(batch_err) if !batch_failure_can_split(&batch_err) => {
+            warn!(
+                error = %batch_err,
+                failed_count = to_embed.len(),
+                "incremental_reindex: systemic batch embed failure; not retrying per-item"
+            );
+            for (mref, _) in &to_embed {
+                warn!(
+                    qualified_name = %mref.qualified_path(),
+                    "incremental_reindex: memory not embedded after systemic batch failure"
+                );
+            }
+            stats.errors += to_embed.len();
+            to_embed.clear();
+            Vec::new()
+        }
         Err(batch_err) => {
             warn!(error = %batch_err, "incremental_reindex: batch embed failed; falling back to per-item");
             let mut vecs: Vec<Vec<f32>> = Vec::with_capacity(contents.len());
@@ -569,6 +615,22 @@ async fn incremental_reindex(
             for (i, content) in contents.iter().enumerate() {
                 match embedding.embed(std::slice::from_ref(content)).await {
                     Ok(mut v) => vecs.push(v.remove(0)),
+                    Err(e) if fallback_failure_stops_retries(&e) => {
+                        warn!(
+                            error = %e,
+                            failed_count = contents.len() - i,
+                            "incremental_reindex: systemic per-item embed failure; stopping fallback"
+                        );
+                        for (mref, _) in &to_embed[i..] {
+                            warn!(
+                                qualified_name = %mref.qualified_path(),
+                                "incremental_reindex: memory not embedded after fallback stopped"
+                            );
+                        }
+                        failed.extend(i..contents.len());
+                        stats.errors += contents.len() - i;
+                        break;
+                    }
                     Err(e) => {
                         warn!(
                             error = %e,
@@ -887,17 +949,60 @@ pub async fn full_reindex(
     // BERT forward pass (MAX_BATCH_SIZE=64 inside the worker) and stays
     // within the per-call timeout budget.
     const REINDEX_BATCH_SIZE: usize = 64;
-    for chunk in items.chunks(REINDEX_BATCH_SIZE) {
+    for (chunk_index, chunk) in items.chunks(REINDEX_BATCH_SIZE).enumerate() {
+        let chunk_start = chunk_index * REINDEX_BATCH_SIZE;
+        let remaining_after_chunk = items.len() - (chunk_start + chunk.len());
+        let mut stop_after_chunk = false;
         let contents: Vec<String> = chunk.iter().map(|(_, c)| c.clone()).collect();
 
         let vectors = match embedding.embed(&contents).await {
             Ok(v) => v,
+            Err(batch_err) if !batch_failure_can_split(&batch_err) => {
+                warn!(
+                    error = %batch_err,
+                    failed_count = items.len() - chunk_start,
+                    "full_reindex: systemic batch embed failure; not retrying per-item"
+                );
+                for (mref, _) in &items[chunk_start..] {
+                    warn!(
+                        qualified_name = %mref.qualified_path(),
+                        "full_reindex: memory not embedded after systemic batch failure"
+                    );
+                }
+                stats.errors += items.len() - chunk_start;
+                stop_after_chunk = true;
+                vec![Vec::new(); chunk.len()]
+            }
             Err(batch_err) => {
                 warn!(error = %batch_err, "full_reindex: batch embed failed; falling back to per-item");
                 let mut vecs = Vec::with_capacity(contents.len());
                 for (i, content) in contents.iter().enumerate() {
                     match embedding.embed(std::slice::from_ref(content)).await {
                         Ok(mut v) => vecs.push(v.remove(0)),
+                        Err(e) if fallback_failure_stops_retries(&e) => {
+                            warn!(
+                                error = %e,
+                                failed_count = contents.len() - i,
+                                "full_reindex: systemic per-item embed failure; stopping fallback"
+                            );
+                            for (mref, _) in &chunk[i..] {
+                                warn!(
+                                    qualified_name = %mref.qualified_path(),
+                                    "full_reindex: memory not embedded after fallback stopped"
+                                );
+                            }
+                            stats.errors += contents.len() - i;
+                            for (mref, _) in &items[chunk_start + chunk.len()..] {
+                                warn!(
+                                    qualified_name = %mref.qualified_path(),
+                                    "full_reindex: memory not embedded after fallback stopped"
+                                );
+                            }
+                            stats.errors += remaining_after_chunk;
+                            stop_after_chunk = true;
+                            vecs.extend((i..contents.len()).map(|_| Vec::new()));
+                            break;
+                        }
                         Err(e) => {
                             warn!(
                                 error = %e,
@@ -935,6 +1040,10 @@ pub async fn full_reindex(
                     stats.errors += 1;
                 }
             }
+        }
+
+        if stop_after_chunk {
+            break;
         }
     }
 
@@ -4456,6 +4565,277 @@ mod tests {
             fn dimensions(&self) -> usize {
                 4
             }
+        }
+
+        /// Systemic failure backend used to prove that a queue-timed-out batch is
+        /// not multiplied into one retry per memory.
+        struct TimeoutEmbedding {
+            calls: std::sync::atomic::AtomicUsize,
+        }
+
+        #[async_trait]
+        impl crate::embedding::EmbeddingBackend for TimeoutEmbedding {
+            async fn embed(
+                &self,
+                _texts: &[String],
+            ) -> Result<Vec<Vec<f32>>, crate::error::MemoryError> {
+                self.calls
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Err(crate::error::MemoryError::EmbeddingQueueTimeout { timeout_secs: 30.0 })
+            }
+
+            fn dimensions(&self) -> usize {
+                4
+            }
+        }
+
+        /// A large active inference can exceed its deadline even though each
+        /// item succeeds alone. Reindex must retain the bounded split fallback
+        /// for this recoverable case.
+        struct BatchOnlyTimeoutEmbedding {
+            calls: std::sync::atomic::AtomicUsize,
+        }
+
+        #[async_trait]
+        impl crate::embedding::EmbeddingBackend for BatchOnlyTimeoutEmbedding {
+            async fn embed(
+                &self,
+                texts: &[String],
+            ) -> Result<Vec<Vec<f32>>, crate::error::MemoryError> {
+                self.calls
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if texts.len() > 1 {
+                    return Err(crate::error::MemoryError::EmbeddingInferenceTimeout {
+                        timeout_secs: 30.0,
+                    });
+                }
+                Ok(vec![vec![0.0, 0.0, 0.0, 1.0]])
+            }
+
+            fn dimensions(&self) -> usize {
+                4
+            }
+        }
+
+        /// The batch appears splittable, but the first singleton exposes that
+        /// the original inference still owns the worker. Remaining retries
+        /// must be abandoned rather than forming a new timeout cascade.
+        struct SplitThenSystemicEmbedding {
+            calls: std::sync::atomic::AtomicUsize,
+        }
+
+        #[async_trait]
+        impl crate::embedding::EmbeddingBackend for SplitThenSystemicEmbedding {
+            async fn embed(
+                &self,
+                texts: &[String],
+            ) -> Result<Vec<Vec<f32>>, crate::error::MemoryError> {
+                self.calls
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if texts.len() > 1 {
+                    Err(crate::error::MemoryError::EmbeddingInferenceTimeout { timeout_secs: 30.0 })
+                } else {
+                    Err(crate::error::MemoryError::EmbeddingQueueTimeout { timeout_secs: 30.0 })
+                }
+            }
+
+            fn dimensions(&self) -> usize {
+                4
+            }
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn active_inference_timeout_splits_into_recoverable_items() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let repo = Arc::new(MemoryRepo::init_or_open(tmp.path(), None).expect("repo init"));
+            let router = RepoRouter::single(Arc::clone(&repo));
+            for name in ["first", "second"] {
+                repo.save_memory(&Memory::from_validated(
+                    MemoryName::new(name.to_string()).unwrap(),
+                    format!("{name} payload"),
+                    MemoryMetadata::new(Scope::Root, vec![], None),
+                ))
+                .await
+                .expect("save");
+            }
+            let embedding = BatchOnlyTimeoutEmbedding {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            };
+            let index = InMemoryStore::new(4);
+
+            let stats = full_reindex(&router, &embedding, &index)
+                .await
+                .expect("reindex returns item-level stats");
+
+            assert_eq!(stats.added, 2);
+            assert_eq!(stats.errors, 0);
+            assert_eq!(
+                embedding.calls.load(std::sync::atomic::Ordering::Relaxed),
+                3,
+                "one batch attempt plus one bounded retry per item"
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn full_reindex_stops_split_after_systemic_singleton_failure() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let repo = Arc::new(MemoryRepo::init_or_open(tmp.path(), None).expect("repo init"));
+            let router = RepoRouter::single(Arc::clone(&repo));
+            for i in 0..65 {
+                let name = format!("memory-{i:02}");
+                repo.save_memory(&Memory::from_validated(
+                    MemoryName::new(name.clone()).unwrap(),
+                    format!("{name} payload"),
+                    MemoryMetadata::new(Scope::Root, vec![], None),
+                ))
+                .await
+                .expect("save");
+            }
+            let embedding = SplitThenSystemicEmbedding {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            };
+            let index = InMemoryStore::new(4);
+
+            let stats = full_reindex(&router, &embedding, &index)
+                .await
+                .expect("reindex returns item-level stats");
+
+            assert_eq!(stats.added, 0);
+            assert_eq!(stats.errors, 65);
+            assert_eq!(
+                embedding.calls.load(std::sync::atomic::Ordering::Relaxed),
+                2,
+                "fallback must stop after the first systemic singleton failure"
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn incremental_reindex_stops_split_after_systemic_singleton_failure() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let state = test_state(&tmp);
+            let mut upserted = Vec::new();
+            for name in ["first", "second"] {
+                state
+                    .repo
+                    .save_memory(&Memory::from_validated(
+                        MemoryName::new(name.to_string()).unwrap(),
+                        format!("{name} payload"),
+                        MemoryMetadata::new(Scope::Root, vec![], None),
+                    ))
+                    .await
+                    .expect("save");
+                upserted.push(MemoryRef::new(
+                    Scope::Root,
+                    MemoryName::new(name.to_string()).unwrap(),
+                ));
+            }
+            let changes = ResolvedChanges {
+                upserted,
+                removed: Vec::new(),
+                unresolved: 0,
+            };
+            let embedding = SplitThenSystemicEmbedding {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            };
+
+            let stats = incremental_reindex(
+                &state.repo,
+                &state.router,
+                &embedding,
+                state.index.as_ref(),
+                &state.lexical,
+                &changes,
+            )
+            .await;
+
+            assert_eq!(stats.added, 0);
+            assert_eq!(stats.errors, 2);
+            assert_eq!(
+                embedding.calls.load(std::sync::atomic::Ordering::Relaxed),
+                2,
+                "fallback must stop after the first systemic singleton failure"
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn systemic_full_reindex_failure_does_not_retry_per_item() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let repo = Arc::new(MemoryRepo::init_or_open(tmp.path(), None).expect("repo init"));
+            let router = RepoRouter::single(Arc::clone(&repo));
+            for i in 0..65 {
+                let name = format!("memory-{i:02}");
+                repo.save_memory(&Memory::from_validated(
+                    MemoryName::new(name.clone()).unwrap(),
+                    format!("{name} payload"),
+                    MemoryMetadata::new(Scope::Root, vec![], None),
+                ))
+                .await
+                .expect("save");
+            }
+            let embedding = TimeoutEmbedding {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            };
+            let index = InMemoryStore::new(4);
+
+            let stats = full_reindex(&router, &embedding, &index)
+                .await
+                .expect("reindex returns item-level stats");
+
+            assert_eq!(stats.added, 0);
+            assert_eq!(stats.errors, 65);
+            assert_eq!(
+                embedding.calls.load(std::sync::atomic::Ordering::Relaxed),
+                1,
+                "a systemic batch timeout must not enqueue per-item duplicates"
+            );
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn systemic_incremental_reindex_failure_does_not_retry_per_item() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let state = test_state(&tmp);
+            let mut upserted = Vec::new();
+            for name in ["first", "second"] {
+                state
+                    .repo
+                    .save_memory(&Memory::from_validated(
+                        MemoryName::new(name.to_string()).unwrap(),
+                        format!("{name} payload"),
+                        MemoryMetadata::new(Scope::Root, vec![], None),
+                    ))
+                    .await
+                    .expect("save");
+                upserted.push(MemoryRef::new(
+                    Scope::Root,
+                    MemoryName::new(name.to_string()).unwrap(),
+                ));
+            }
+            let changes = ResolvedChanges {
+                upserted,
+                removed: Vec::new(),
+                unresolved: 0,
+            };
+            let embedding = TimeoutEmbedding {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            };
+
+            let stats = incremental_reindex(
+                &state.repo,
+                &state.router,
+                &embedding,
+                state.index.as_ref(),
+                &state.lexical,
+                &changes,
+            )
+            .await;
+
+            assert_eq!(stats.added, 0);
+            assert_eq!(stats.errors, 2);
+            assert_eq!(
+                embedding.calls.load(std::sync::atomic::Ordering::Relaxed),
+                1,
+                "a systemic incremental timeout must not enqueue per-item duplicates"
+            );
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
