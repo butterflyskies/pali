@@ -12,6 +12,35 @@ pub enum MemoryError {
     #[error("embedding error: {0}")]
     Embedding(String),
 
+    /// A queued embedding request did not start within its deadline.
+    #[error(
+        "embedding error: timed out waiting {timeout_secs:.1}s for the embedding worker — the worker will recover automatically"
+    )]
+    EmbeddingQueueTimeout {
+        /// Configured request deadline in seconds.
+        timeout_secs: f64,
+    },
+
+    /// Active embedding inference did not complete within its deadline.
+    #[error(
+        "embedding error: active inference timed out after {timeout_secs:.1}s — the worker will recover automatically"
+    )]
+    EmbeddingInferenceTimeout {
+        /// Configured request deadline in seconds.
+        timeout_secs: f64,
+    },
+
+    /// The embedding worker's bounded queue had no capacity for this request.
+    #[error("embedding error: embedding worker is busy — try again")]
+    EmbeddingWorkerBusy,
+
+    /// The embedding worker cannot accept or answer requests.
+    #[error("embedding error: embedding worker unavailable — {reason}")]
+    EmbeddingWorkerUnavailable {
+        /// Why the worker is unavailable.
+        reason: &'static str,
+    },
+
     /// The vector index could not complete the requested operation.
     #[error("index error: {0}")]
     Index(String),

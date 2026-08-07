@@ -1,6 +1,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{mpsc, Arc};
 use std::time::Instant;
 
 use candle_core::{Device, Tensor};
@@ -25,8 +26,13 @@ pub const MODEL_ID: &str = "BAAI/bge-small-en-v1.5";
 struct EmbedRequest {
     texts: Vec<String>,
     enqueued_at: Instant,
+    state: Arc<AtomicU8>,
     reply_tx: oneshot::Sender<Result<Vec<Vec<f32>>, MemoryError>>,
 }
+
+const REQUEST_QUEUED: u8 = 0;
+const REQUEST_STARTED: u8 = 1;
+const REQUEST_ABANDONED: u8 = 2;
 
 /// Pure-Rust embedding engine using candle for BERT inference.
 ///
@@ -168,45 +174,7 @@ impl Drop for CandleEmbeddingEngine {
 /// self-healing path.
 fn worker_loop(mut inner: CandleInner, dim: usize, rx: mpsc::Receiver<EmbedRequest>) {
     for request in rx {
-        let queue_wait_ms =
-            u64::try_from(request.enqueued_at.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let texts = request.texts;
-        let reply_tx = request.reply_tx;
-        let span = tracing::debug_span!(
-            "embedding.embed",
-            batch_size = texts.len(),
-            dimensions = dim,
-            model = MODEL_ID,
-        );
-        let _enter = span.enter();
-
-        let mut panicked = false;
-        let inference_start = Instant::now();
-        let result = catch_unwind(AssertUnwindSafe(|| embed_batch(&inner, &texts))).unwrap_or_else(
-            |panic_payload| {
-                panicked = true;
-                let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                    (*s).to_string()
-                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "unknown panic in embedding engine".to_string()
-                };
-                tracing::warn!(error = %msg, "embedding engine panicked — recovering");
-                Err(MemoryError::Embedding(format!(
-                    "embedding engine panicked: {msg}"
-                )))
-            },
-        );
-        let inference_ms = u64::try_from(inference_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-        tracing::info!(
-            queue_wait_ms,
-            inference_ms,
-            outcome = if result.is_ok() { "success" } else { "error" },
-            "embedding completed"
-        );
-
-        let _ = reply_tx.send(result);
+        let panicked = process_request(request, dim, |texts| embed_batch(&inner, texts));
 
         if panicked {
             inner.tokenizer.with_padding(Some(PaddingParams {
@@ -221,41 +189,128 @@ fn worker_loop(mut inner: CandleInner, dim: usize, rx: mpsc::Receiver<EmbedReque
     }
 }
 
+/// Process one queued request, skipping work whose caller has already left.
+///
+/// Returns `true` when inference panicked so the caller can restore the
+/// tokenizer configuration before processing the next request.
+fn process_request<F>(request: EmbedRequest, dim: usize, embed: F) -> bool
+where
+    F: FnOnce(&[String]) -> Result<Vec<Vec<f32>>, MemoryError>,
+{
+    let queue_wait_ms =
+        u64::try_from(request.enqueued_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let texts = request.texts;
+    let reply_tx = request.reply_tx;
+
+    // Atomically claim the request for inference. A caller whose deadline
+    // expires while it is still queued marks it abandoned; whichever side
+    // wins this transition determines the typed timeout without a race between
+    // checking the reply channel and starting expensive work.
+    if request
+        .state
+        .compare_exchange(
+            REQUEST_QUEUED,
+            REQUEST_STARTED,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+        || reply_tx.is_closed()
+    {
+        tracing::info!(
+            queue_wait_ms,
+            batch_size = texts.len(),
+            outcome = "abandoned",
+            "embedding request abandoned before execution"
+        );
+        return false;
+    }
+
+    let span = tracing::debug_span!(
+        "embedding.embed",
+        batch_size = texts.len(),
+        dimensions = dim,
+        model = MODEL_ID,
+    );
+    let _enter = span.enter();
+
+    let mut panicked = false;
+    let inference_start = Instant::now();
+    let result = catch_unwind(AssertUnwindSafe(|| embed(&texts))).unwrap_or_else(|panic_payload| {
+        panicked = true;
+        let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic in embedding engine".to_string()
+        };
+        tracing::warn!(error = %msg, "embedding engine panicked — recovering");
+        Err(MemoryError::Embedding(format!(
+            "embedding engine panicked: {msg}"
+        )))
+    });
+    let inference_ms = u64::try_from(inference_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    tracing::info!(
+        queue_wait_ms,
+        inference_ms,
+        outcome = if result.is_ok() { "success" } else { "error" },
+        "embedding completed"
+    );
+
+    let _ = reply_tx.send(result);
+    panicked
+}
+
 #[async_trait::async_trait]
 impl EmbeddingBackend for CandleEmbeddingEngine {
     async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, MemoryError> {
         let (reply_tx, reply_rx) = oneshot::channel();
+        let state = Arc::new(AtomicU8::new(REQUEST_QUEUED));
 
         let tx = self
             .tx
             .as_ref()
-            .ok_or_else(|| MemoryError::Embedding("embedding engine has been shut down".into()))?;
+            .ok_or(MemoryError::EmbeddingWorkerUnavailable {
+                reason: "engine has been shut down",
+            })?;
 
         tx.try_send(EmbedRequest {
             texts: texts.to_vec(),
             enqueued_at: Instant::now(),
+            state: Arc::clone(&state),
             reply_tx,
         })
         .map_err(|e| match e {
-            mpsc::TrySendError::Full(_) => {
-                MemoryError::Embedding("embedding worker is busy — try again".into())
-            }
-            mpsc::TrySendError::Disconnected(_) => {
-                MemoryError::Embedding("embedding worker has exited — restart required".into())
-            }
+            mpsc::TrySendError::Full(_) => MemoryError::EmbeddingWorkerBusy,
+            mpsc::TrySendError::Disconnected(_) => MemoryError::EmbeddingWorkerUnavailable {
+                reason: "worker exited; restart required",
+            },
         })?;
 
         let result = match timeout(self.embed_timeout, reply_rx).await {
             Ok(Ok(result)) => result,
             // Fires if the worker drops reply_tx without sending (e.g. a
             // double-panic that escapes catch_unwind, or a panic in span setup).
-            Ok(Err(_)) => Err(MemoryError::Embedding(
-                "embedding worker dropped the reply channel unexpectedly".into(),
-            )),
-            Err(_elapsed) => Err(MemoryError::Embedding(format!(
-                "embedding timed out after {:.1}s — the worker will recover automatically",
-                self.embed_timeout.as_secs_f64(),
-            ))),
+            Ok(Err(_)) => Err(MemoryError::EmbeddingWorkerUnavailable {
+                reason: "worker dropped the reply channel unexpectedly",
+            }),
+            Err(_elapsed) => match state.compare_exchange(
+                REQUEST_QUEUED,
+                REQUEST_ABANDONED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) | Err(REQUEST_ABANDONED) => Err(MemoryError::EmbeddingQueueTimeout {
+                    timeout_secs: self.embed_timeout.as_secs_f64(),
+                }),
+                Err(REQUEST_STARTED) => Err(MemoryError::EmbeddingInferenceTimeout {
+                    timeout_secs: self.embed_timeout.as_secs_f64(),
+                }),
+                Err(unexpected) => Err(MemoryError::Internal(format!(
+                    "invalid embedding request state after timeout: {unexpected}"
+                ))),
+            },
         };
 
         // Report operational state passively so /readyz reflects reality without probing.
@@ -463,6 +518,19 @@ mod tests {
         let (tx, rx) = mpsc::sync_channel::<EmbedRequest>(1);
         std::thread::spawn(move || {
             for request in rx {
+                if request
+                    .state
+                    .compare_exchange(
+                        REQUEST_QUEUED,
+                        REQUEST_STARTED,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_err()
+                    || request.reply_tx.is_closed()
+                {
+                    continue;
+                }
                 handler(request.texts, request.reply_tx);
             }
         });
@@ -487,6 +555,30 @@ mod tests {
         let vecs = result.expect("embed should succeed");
         assert_eq!(vecs.len(), 2);
         assert_eq!(vecs[0].len(), 4);
+    }
+
+    #[test]
+    fn abandoned_queued_request_skips_inference() {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        drop(reply_rx);
+        let request = EmbedRequest {
+            texts: vec!["already timed out".to_string()],
+            enqueued_at: Instant::now(),
+            state: Arc::new(AtomicU8::new(REQUEST_ABANDONED)),
+            reply_tx,
+        };
+        let called = std::sync::atomic::AtomicBool::new(false);
+
+        let panicked = process_request(request, 4, |_| {
+            called.store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(vec![vec![0.0; 4]])
+        });
+
+        assert!(!panicked);
+        assert!(
+            !called.load(std::sync::atomic::Ordering::Relaxed),
+            "a request whose caller timed out before execution must not consume inference"
+        );
     }
 
     #[tokio::test]
@@ -515,10 +607,7 @@ mod tests {
             .embed(&["slow".to_string()])
             .await
             .expect_err("slow embed should time out");
-        assert!(
-            err.to_string().contains("timed out"),
-            "expected timeout error, got: {err}"
-        );
+        assert!(matches!(err, MemoryError::EmbeddingInferenceTimeout { .. }));
 
         // Unblock the worker and wait for it to finish the stale request.
         barrier.wait();
@@ -532,6 +621,48 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn timeout_distinguishes_queued_request_from_active_inference() {
+        let barrier = Arc::new(Barrier::new(2));
+        let worker_barrier = Arc::clone(&barrier);
+        let engine = Arc::new(fake_engine(
+            Duration::from_millis(50),
+            move |texts, reply_tx| {
+                if texts[0] == "active" {
+                    worker_barrier.wait();
+                    worker_barrier.wait();
+                }
+                ok_handler(texts, reply_tx);
+            },
+        ));
+
+        let active_engine = Arc::clone(&engine);
+        let active =
+            tokio::spawn(async move { active_engine.embed(&["active".to_string()]).await });
+
+        // The first request has crossed the worker boundary and is blocked in
+        // inference. A second request can enter the channel but cannot start.
+        barrier.wait();
+        let queued_err = engine
+            .embed(&["queued".to_string()])
+            .await
+            .expect_err("queued request should time out behind active inference");
+        assert!(matches!(
+            queued_err,
+            MemoryError::EmbeddingQueueTimeout { .. }
+        ));
+
+        barrier.wait();
+        let active_err = active
+            .await
+            .expect("active task should not panic")
+            .expect_err("active request should exceed its deadline");
+        assert!(matches!(
+            active_err,
+            MemoryError::EmbeddingInferenceTimeout { .. }
+        ));
+    }
+
     #[tokio::test]
     async fn disconnected_worker_returns_error() {
         let (tx, rx) = mpsc::sync_channel::<EmbedRequest>(1);
@@ -543,10 +674,10 @@ mod tests {
             .embed(&["anything".to_string()])
             .await
             .expect_err("disconnected worker should error");
-        assert!(
-            err.to_string().contains("exited"),
-            "expected 'exited' in error, got: {err}"
-        );
+        assert!(matches!(
+            err,
+            MemoryError::EmbeddingWorkerUnavailable { .. }
+        ));
     }
 
     #[tokio::test]
@@ -561,6 +692,7 @@ mod tests {
         tx.send(EmbedRequest {
             texts: vec!["fill".to_string()],
             enqueued_at: Instant::now(),
+            state: Arc::new(AtomicU8::new(REQUEST_QUEUED)),
             reply_tx: filler_tx,
         })
         .unwrap();
@@ -571,10 +703,7 @@ mod tests {
             .embed(&["overflow".to_string()])
             .await
             .expect_err("full channel should error");
-        assert!(
-            err.to_string().contains("busy"),
-            "expected 'busy' in error, got: {err}"
-        );
+        assert!(matches!(err, MemoryError::EmbeddingWorkerBusy));
 
         drop(rx); // clean up
     }

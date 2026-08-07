@@ -249,7 +249,14 @@ pub async fn readyz_handler(
 
     let git_check = check_with_staleness(&git, threshold);
     let embedding_check = check_with_staleness(&embedding, threshold);
-    let vector_index_check = check_with_staleness(&vector_index, threshold);
+    let vector_index_check = if state.index_mirror_is_intact() {
+        check_with_staleness(&vector_index, threshold)
+    } else {
+        CheckResult {
+            status: "down",
+            reason: Some("mirror incomplete"),
+        }
+    };
 
     let sync_check = if state.health.require_sync {
         let sync = state.health.sync.load();

@@ -1,6 +1,6 @@
 [package]
 name = "pali"
-version = "0.17.1"
+version = "0.17.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Pali — semantic memory server for AI agents. Pure-Rust embeddings, hybrid retrieval, git-backed storage."

@@ -122,6 +122,49 @@ async fn readyz_degraded_server_returns_503_not_ready() {
     assert_eq!(body["checks"]["vector_index"]["status"], "down");
 }
 
+/// A known vector-mirror gap must keep readiness red even when the embedding
+/// worker and vector store most recently reported successful operations.
+#[tokio::test]
+async fn readyz_incomplete_vector_mirror_returns_503_not_ready() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let state = common::build_healthy_state(&tmp);
+    state.mark_index_mirror_incomplete();
+    let router = common::build_test_router(
+        state,
+        vec![
+            "localhost".to_string(),
+            "127.0.0.1".to_string(),
+            "::1".to_string(),
+        ],
+    );
+
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .uri("/readyz")
+                .header("host", "127.0.0.1")
+                .body(Body::empty())
+                .expect("valid request"),
+        )
+        .await
+        .expect("service call should not fail");
+
+    assert_eq!(resp.status().as_u16(), 503);
+    let bytes = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("body bytes");
+    let body: serde_json::Value =
+        serde_json::from_slice(&bytes).expect("body should be valid JSON");
+
+    assert_eq!(body["status"], "not_ready");
+    assert_eq!(body["checks"]["embedding"]["status"], "up");
+    assert_eq!(body["checks"]["vector_index"]["status"], "down");
+    assert_eq!(
+        body["checks"]["vector_index"]["reason"],
+        "mirror incomplete"
+    );
+}
+
 /// `/version` returns 200 with the crate version from Cargo.toml.
 #[tokio::test]
 async fn version_returns_cargo_pkg_version() {
