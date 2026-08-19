@@ -454,7 +454,7 @@ mod tests {
     fn canonicalize_allow_missing_rejects_dot_dot_above_root() {
         // Enough `..` in a missing suffix to climb above `/` cannot name any
         // location; it must error, not wrap around or silently clamp.
-        let spelled = PathBuf::from("/memory-mcp-test-nonexistent-4f2a9c/../../still-missing/repo");
+        let spelled = PathBuf::from("/pali-test-nonexistent-4f2a9c/../../still-missing/repo");
         let err = canonicalize_allow_missing(&spelled).unwrap_err();
         assert!(
             err.to_string().contains("root"),

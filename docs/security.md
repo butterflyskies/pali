@@ -2,7 +2,7 @@
 
 ## Security boundaries
 
-memory-mcp keeps inference and derived search indexes local. Memories remain
+Pali keeps inference and derived search indexes local. Memories remain
 plaintext Markdown in the managed git repository, and their content leaves the
 machine only when an operator deliberately configures and invokes GitHub sync.
 
@@ -18,7 +18,7 @@ token file, or the system keyring. Kubernetes deployments can inject a token
 from a Secret through the environment variable. The CLI does not accept tokens
 as arguments, and credentials are not written to the memory repository. On
 Unix, the file store creates its directory with mode `0o700` and token file
-with mode `0o600`; memory-mcp also sets process umask `0o077` before creating
+with mode `0o600`; Pali also sets process umask `0o077` before creating
 files so group and other permissions are masked off by default.
 
 ## Input and repository safety
@@ -31,7 +31,7 @@ managed repository; they do not turn scopes into authorization policy.
 
 ## Container hardening
 
-The provided image runs as the non-root `memory-mcp` user (UID 1000). The
+The provided image runs as the non-root `pali` user (UID 1000). The
 provided Kubernetes deployment adds controls that the image alone cannot
 enforce: `runAsNonRoot`, a read-only root filesystem, disabled privilege
 escalation, all Linux capabilities dropped, the `RuntimeDefault` seccomp
@@ -61,7 +61,7 @@ implementing controls are visible in the
 
 ## Known limits
 
-memory-mcp currently has no application-layer client authentication,
+Pali currently has no application-layer client authentication,
 authorization policy, or security audit log. Recall feedback is local retrieval
 telemetry, not an audit trail. Protect the endpoint, plaintext repository,
 token, and remote using deployment controls appropriate to their sensitivity.

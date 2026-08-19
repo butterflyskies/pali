@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+### Behavior changes — read before upgrading
+
+- **Release assets are renamed from `memory-mcp` to `pali`.** Published release archives change from `memory-mcp-<version>-<target>.tar.gz` (plus `.sha256`) to `pali-<version>-<target>.tar.gz`, and the packaged executable inside changes from `memory-mcp` to `pali`. **Migration:** this is a clean cutover, effective the first `pali`-named release — no compatibility aliases or duplicate `memory-mcp`-named assets are published alongside the new ones. Scripts, CI jobs, or manifests that pin the old asset or executable names must update to the `pali` equivalents before upgrading past that release.
+
 ### Added
 
 - **Chunk-addressable retrieval contract** (#262 slice 1, ADR-0042): typed identity and wire shapes for fact-level retrieval units — deterministic `FactId` (parent id + chunker version + source span + content digest, canonical `fact:v1:...` string form), validated non-empty UTF-8 `SourceSpan`, `ChunkerVersion`, and the crate-internal catalog (`FactRecord`) and recall-provenance (`MatchedChunk`) shapes, which go public when their slices wire them. Contract only — no behavioral wiring; the deterministic chunker, derived catalog, chunk indexes, and response wiring land in later slices. `MemoryRef` gains strict `Serialize`/`Deserialize` support for shapes that embed a parent reference. Existing whole-memory retrieval is unchanged. ADR-0042 carries the #262 invariant ledger (each invariant mapped to enforcement, test, and owning slice) and the index-persistence posture; `proptest` lands as a dev-dependency seeding the repository's property-based-testing layer (serde round-trip totality, canonical-form totality, span validity, and collision-resistance evidence over generated inputs).

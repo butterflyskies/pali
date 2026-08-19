@@ -74,13 +74,13 @@ jobs:
           case "${{ matrix.target }}" in
             x86_64-unknown-linux-gnu)
               cargo auditable build --release --features k8s --target x86_64-unknown-linux-gnu
-              cp target/x86_64-unknown-linux-gnu/release/memory-mcp memory-mcp
+              cp target/x86_64-unknown-linux-gnu/release/pali pali
               ;;
             universal-apple-darwin)
               cargo auditable build --release --features k8s --target aarch64-apple-darwin --target x86_64-apple-darwin
-              lipo -create -output memory-mcp \
-                target/aarch64-apple-darwin/release/memory-mcp \
-                target/x86_64-apple-darwin/release/memory-mcp
+              lipo -create -output pali \
+                target/aarch64-apple-darwin/release/pali \
+                target/x86_64-apple-darwin/release/pali
               ;;
             *)
               echo "::error::Unknown target: ${{ matrix.target }}"
@@ -92,9 +92,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.create-release.outputs.tag_name }}
         run: |
-          archive="memory-mcp-${TAG_NAME}-${{ matrix.target }}"
+          archive="pali-${TAG_NAME}-${{ matrix.target }}"
           mkdir "${archive}"
-          mv memory-mcp "${archive}/"
+          mv pali "${archive}/"
           tar czf "${archive}.tar.gz" "${archive}"
           shasum -a 256 "${archive}.tar.gz" > "${archive}.tar.gz.sha256"
           gh release upload "${TAG_NAME}" "${archive}.tar.gz" "${archive}.tar.gz.sha256" \

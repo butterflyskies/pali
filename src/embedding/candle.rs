@@ -349,7 +349,7 @@ fn load_model_files() -> anyhow::Result<(BertConfig, Tokenizer, PathBuf)> {
         tracing::warn!(
             model = MODEL_ID,
             "embedding model not found in cache — downloading from HuggingFace Hub \
-             (this may take a minute on first run; use `memory-mcp warmup` to pre-populate)"
+             (this may take a minute on first run; use `pali warmup` to pre-populate)"
         );
     } else {
         tracing::info!(model = MODEL_ID, "loading embedding model from cache");

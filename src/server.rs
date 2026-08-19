@@ -4239,7 +4239,7 @@ mod tests {
         fn bad_remote_state(tmp: &tempfile::TempDir) -> Arc<AppState> {
             let repo = MemoryRepo::init_or_open(
                 tmp.path(),
-                Some("file:///nonexistent/memory-mcp-test-remote.git"),
+                Some("file:///nonexistent/pali-test-remote.git"),
             )
             .expect("repo init");
             Arc::new(AppState::new(
@@ -4347,7 +4347,7 @@ mod tests {
             let health = HealthRegistry::new();
             let mapping = RemoteMapping {
                 scope: "work".to_string(),
-                url: "file:///nonexistent/memory-mcp-test-remote.git".to_string(),
+                url: "file:///nonexistent/pali-test-remote.git".to_string(),
                 path: Some(work_dir.path().display().to_string()),
                 branch: None,
             };

@@ -1,6 +1,6 @@
 # Architecture
 
-memory-mcp is a single Rust binary that serves Model Context Protocol over
+Pali is a single Rust binary that serves Model Context Protocol over
 Streamable HTTP. Its durable state is a git repository of Markdown files;
 retrieval indexes and recall telemetry are local derived state.
 
@@ -20,7 +20,7 @@ Axum + rmcp server
 Each memory is a Markdown file with YAML frontmatter containing its stable ID,
 name, scope, tags, source, and timestamps. Repository operations stage and
 commit changes through libgit2. The files remain readable and editable without
-memory-mcp, and git preserves their history.
+Pali, and git preserves their history.
 
 The remote is optional. `sync` pulls, resolves conflicts by `updated_at`, and
 pushes the configured branch. Authentication is acquired only when remote work

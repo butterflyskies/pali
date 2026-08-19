@@ -1,7 +1,7 @@
 # Configuration
 
 Server options are available as command-line flags and environment variables.
-Run `memory-mcp serve --help` against your installed version for the complete,
+Run `pali serve --help` against your installed version for the complete,
 authoritative list.
 
 ## Server
@@ -40,16 +40,16 @@ best-effort OTLP span export.
 Authenticate to a private GitHub remote with the OAuth device flow:
 
 ```bash
-memory-mcp auth login
-memory-mcp auth status
+pali auth login
+pali auth status
 ```
 
 Select storage explicitly when needed:
 
 ```bash
-memory-mcp auth login --store keyring
-memory-mcp auth login --store file
-memory-mcp auth login --store stdout
+pali auth login --store keyring
+pali auth login --store file
+pali auth login --store stdout
 ```
 
 Builds with the `k8s` feature also support `--store k8s-secret`.
@@ -59,9 +59,9 @@ file, then the system keyring. Tokens are never accepted as CLI arguments.
 
 ## Embedding model
 
-memory-mcp computes embeddings locally with Candle and BGE-small-en-v1.5
+Pali computes embeddings locally with Candle and BGE-small-en-v1.5
 (384 dimensions). Model files use the Hugging Face cache under `HF_HOME`.
-`memory-mcp warmup` downloads them without starting the server.
+`pali warmup` downloads them without starting the server.
 
 A dedicated worker thread owns the embedding engine. The queue is bounded, and
 a timed-out request does not permanently wedge the worker.

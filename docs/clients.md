@@ -1,9 +1,9 @@
 # Client setup
 
-memory-mcp exposes MCP over Streamable HTTP. The default endpoint is
+Pali exposes MCP over Streamable HTTP. The default endpoint is
 `http://localhost:8080/mcp`.
 
-Client configuration formats evolve independently from memory-mcp. Treat these
+Client configuration formats evolve independently from Pali. Treat these
 examples as starting points and consult the client documentation when a current
 release rejects a field or location.
 
@@ -80,7 +80,7 @@ mcpServers:
 
 ## Clients that require stdio
 
-memory-mcp intentionally ships only Streamable HTTP. A client without native
+Pali intentionally ships only Streamable HTTP. A client without native
 HTTP support can use a bridge such as `mcp-remote`:
 
 ```json
@@ -94,4 +94,4 @@ HTTP support can use a bridge such as `mcp-remote`:
 }
 ```
 
-The bridge is a separate process and dependency; it is not part of memory-mcp.
+The bridge is a separate process and dependency; it is not part of Pali.

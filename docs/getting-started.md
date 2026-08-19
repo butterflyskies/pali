@@ -1,37 +1,37 @@
 # Getting started
 
-This guide takes memory-mcp from installation to a first successful recall.
+This guide takes Pali from installation to a first successful recall.
 
 ## Install
 
 From crates.io:
 
 ```bash
-cargo install memory-mcp
+cargo install pali
 ```
 
 Or build the current source:
 
 ```bash
-git clone https://github.com/butterflyskies/memory-mcp.git
-cd memory-mcp
+git clone https://github.com/butterflyskies/pali.git
+cd pali
 cargo install --path .
 ```
 
 ## Start the server
 
 ```bash
-memory-mcp serve
+pali serve
 ```
 
-By default, memory-mcp listens on `127.0.0.1:8080`, exposes MCP at
+By default, Pali listens on `127.0.0.1:8080`, exposes MCP at
 `/mcp`, and stores memories in `~/.memory-mcp`.
 
 The first run downloads BGE-small-en-v1.5 (about 130 MB) from Hugging Face.
 Pre-download it when preparing an offline or reproducible environment:
 
 ```bash
-memory-mcp warmup
+pali warmup
 ```
 
 To change the bind address or repository location:
@@ -39,7 +39,7 @@ To change the bind address or repository location:
 ```bash
 MEMORY_MCP_BIND=0.0.0.0:9090 \
 MEMORY_MCP_REPO_PATH=/path/to/memories \
-memory-mcp serve
+pali serve
 ```
 
 See [Configuration](configuration.md) for the complete runtime surface.
@@ -96,7 +96,7 @@ The published image contains the embedding model, so startup does not need to
 download it:
 
 ```bash
-docker run -d --name memory-mcp \
+docker run -d --name pali \
   -p 8080:8080 \
   -v "$HOME/.memory-mcp:/data/repo" \
   ghcr.io/butterflyskies/memory-mcp:latest
@@ -107,22 +107,22 @@ the container.
 
 ## Configure git sync
 
-memory-mcp works without a remote. To share the repository across machines,
+Pali works without a remote. To share the repository across machines,
 configure a remote URL when starting the server:
 
 ```bash
 MEMORY_MCP_REMOTE_URL=https://github.com/you/my-memories.git \
-memory-mcp serve
+pali serve
 ```
 
 Authenticate first when the remote requires a GitHub token:
 
 ```bash
-memory-mcp auth login
+pali auth login
 ```
 
 The connected agent can then call the `sync` MCP tool. There is no standalone
-`memory-mcp sync` CLI subcommand.
+`pali sync` CLI subcommand.
 
 For private remotes, token storage, containers, and Kubernetes, continue with
 [Configuration](configuration.md) and [Deployment](deployment.md).

@@ -156,7 +156,7 @@ async fn spawn_mock_server(
 async fn auth_status_no_token_prints_not_configured() {
     let tmp = tempfile::tempdir().expect("tempdir");
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_memory-mcp"))
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_pali"))
         .args(["auth", "status"])
         .env_remove("MEMORY_MCP_GITHUB_TOKEN")
         .env_remove("DBUS_SESSION_BUS_ADDRESS")
@@ -165,7 +165,7 @@ async fn auth_status_no_token_prints_not_configured() {
         .env("HOME", tmp.path())
         .output()
         .await
-        .expect("failed to run memory-mcp auth status");
+        .expect("failed to run pali auth status");
 
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -180,14 +180,14 @@ async fn auth_status_with_env_token_prints_source_and_preview() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let token = "ghp_test1234abcdefgh";
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_memory-mcp"))
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_pali"))
         .args(["auth", "status"])
         .env("MEMORY_MCP_GITHUB_TOKEN", token)
         .env_remove("DBUS_SESSION_BUS_ADDRESS")
         .env("HOME", tmp.path())
         .output()
         .await
-        .expect("failed to run memory-mcp auth status");
+        .expect("failed to run pali auth status");
 
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -312,14 +312,14 @@ async fn pali_bind_env_var_sets_listen_address() {
     let port = portpicker::pick_unused_port().expect("no free port");
     let bind = format!("127.0.0.1:{port}");
 
-    let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_memory-mcp"));
+    let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_pali"));
     cmd.args(["serve", "--repo-path", repo_path])
         .env("MEMORY_MCP_BIND", &bind)
         .kill_on_drop(true)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
 
-    let mut child = cmd.spawn().expect("failed to start memory-mcp");
+    let mut child = cmd.spawn().expect("failed to start pali");
 
     let client = reqwest::Client::new();
     let healthz_url = format!("http://{bind}/healthz");

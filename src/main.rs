@@ -30,7 +30,7 @@ use pali::types::{validate_branch_name, AppState};
 
 #[derive(Parser)]
 #[command(
-    name = "memory-mcp",
+    name = "pali",
     about = "Semantic memory MCP server for AI agents",
     version
 )]
@@ -631,8 +631,8 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         None => {
-            // Re-parse as "memory-mcp serve" so clap's env var resolution runs.
-            let cli = Cli::parse_from(["memory-mcp", "serve"]);
+            // Re-parse as "pali serve" so clap's env var resolution runs.
+            let cli = Cli::parse_from(["pali", "serve"]);
             match cli.command {
                 Some(Command::Serve(args)) => {
                     #[cfg(feature = "otlp")]
@@ -1125,13 +1125,13 @@ mod tests {
 
     #[test]
     fn test_cli_bare_has_no_command() {
-        let cli = Cli::try_parse_from(["memory-mcp"]).expect("bare invocation should parse");
+        let cli = Cli::try_parse_from(["pali"]).expect("bare invocation should parse");
         assert!(cli.command.is_none());
     }
 
     #[test]
     fn test_cli_serve_with_bind() {
-        let cli = Cli::try_parse_from(["memory-mcp", "serve", "--bind", "0.0.0.0:9090"])
+        let cli = Cli::try_parse_from(["pali", "serve", "--bind", "0.0.0.0:9090"])
             .expect("serve --bind should parse");
         match cli.command {
             Some(Command::Serve(args)) => assert_eq!(args.bind, "0.0.0.0:9090"),
@@ -1141,7 +1141,7 @@ mod tests {
 
     #[test]
     fn test_cli_auth_login_store_keyring() {
-        let cli = Cli::try_parse_from(["memory-mcp", "auth", "login", "--store", "keyring"])
+        let cli = Cli::try_parse_from(["pali", "auth", "login", "--store", "keyring"])
             .expect("auth login --store keyring should parse");
         match cli.command {
             Some(Command::Auth(auth_cmd)) => match auth_cmd.action {
@@ -1156,8 +1156,8 @@ mod tests {
 
     #[test]
     fn test_cli_auth_status() {
-        let cli = Cli::try_parse_from(["memory-mcp", "auth", "status"])
-            .expect("auth status should parse");
+        let cli =
+            Cli::try_parse_from(["pali", "auth", "status"]).expect("auth status should parse");
         match cli.command {
             Some(Command::Auth(auth_cmd)) => {
                 assert!(matches!(auth_cmd.action, AuthAction::Status));
@@ -1171,14 +1171,14 @@ mod tests {
         // Simulate what happens in the None arm: parse_from builds ServeArgs
         // from env vars. This test just checks that parse_from succeeds and
         // produces a Serve command.
-        let cli = Cli::parse_from(["memory-mcp", "serve"]);
+        let cli = Cli::parse_from(["pali", "serve"]);
         assert!(matches!(cli.command, Some(Command::Serve(_))));
     }
 
     #[cfg(feature = "k8s")]
     #[test]
     fn test_cli_auth_login_store_k8s_secret() {
-        let cli = Cli::try_parse_from(["memory-mcp", "auth", "login", "--store", "k8s-secret"])
+        let cli = Cli::try_parse_from(["pali", "auth", "login", "--store", "k8s-secret"])
             .expect("auth login --store k8s-secret should parse");
         match cli.command {
             Some(Command::Auth(auth_cmd)) => match auth_cmd.action {
@@ -1225,13 +1225,8 @@ mod tests {
 
     #[test]
     fn test_cli_serve_allowed_host_single() {
-        let cli = Cli::try_parse_from([
-            "memory-mcp",
-            "serve",
-            "--allowed-host",
-            "memory-mcp.svc.echoes",
-        ])
-        .expect("serve --allowed-host should parse");
+        let cli = Cli::try_parse_from(["pali", "serve", "--allowed-host", "memory-mcp.svc.echoes"])
+            .expect("serve --allowed-host should parse");
         match cli.command {
             Some(Command::Serve(args)) => {
                 assert_eq!(args.allowed_host, vec!["memory-mcp.svc.echoes"]);
@@ -1243,7 +1238,7 @@ mod tests {
     #[test]
     fn test_cli_serve_allowed_host_multiple() {
         let cli = Cli::try_parse_from([
-            "memory-mcp",
+            "pali",
             "serve",
             "--allowed-host",
             "host-a.example.com",
@@ -1263,8 +1258,7 @@ mod tests {
 
     #[test]
     fn test_cli_serve_no_allowed_host_defaults_empty() {
-        let cli =
-            Cli::try_parse_from(["memory-mcp", "serve"]).expect("serve without hosts should parse");
+        let cli = Cli::try_parse_from(["pali", "serve"]).expect("serve without hosts should parse");
         match cli.command {
             Some(Command::Serve(args)) => {
                 assert!(args.allowed_host.is_empty());
@@ -1275,7 +1269,7 @@ mod tests {
 
     #[test]
     fn test_cli_version() {
-        match Cli::try_parse_from(["memory-mcp", "--version"]) {
+        match Cli::try_parse_from(["pali", "--version"]) {
             Err(e) => assert_eq!(e.kind(), clap::error::ErrorKind::DisplayVersion),
             Ok(_) => panic!("--version should cause clap to exit"),
         }
@@ -1318,7 +1312,7 @@ mod tests {
 
     #[test]
     fn test_cli_serve_idle_timeout_default() {
-        let cli = Cli::try_parse_from(["memory-mcp", "serve"]).expect("serve should parse");
+        let cli = Cli::try_parse_from(["pali", "serve"]).expect("serve should parse");
         match cli.command {
             Some(Command::Serve(args)) => assert_eq!(args.idle_timeout_secs, 14400),
             _ => panic!("expected Serve command"),
@@ -1327,7 +1321,7 @@ mod tests {
 
     #[test]
     fn test_cli_serve_idle_timeout_custom() {
-        let cli = Cli::try_parse_from(["memory-mcp", "serve", "--idle-timeout-secs", "300"])
+        let cli = Cli::try_parse_from(["pali", "serve", "--idle-timeout-secs", "300"])
             .expect("serve with idle-timeout should parse");
         match cli.command {
             Some(Command::Serve(args)) => assert_eq!(args.idle_timeout_secs, 300),
@@ -1337,7 +1331,7 @@ mod tests {
 
     #[test]
     fn test_cli_serve_max_session_lifetime_default() {
-        let cli = Cli::try_parse_from(["memory-mcp", "serve"]).expect("serve should parse");
+        let cli = Cli::try_parse_from(["pali", "serve"]).expect("serve should parse");
         match cli.command {
             Some(Command::Serve(args)) => assert_eq!(args.max_session_lifetime_secs, 0),
             _ => panic!("expected Serve command"),
@@ -1346,13 +1340,8 @@ mod tests {
 
     #[test]
     fn test_cli_serve_max_session_lifetime_custom() {
-        let cli = Cli::try_parse_from([
-            "memory-mcp",
-            "serve",
-            "--max-session-lifetime-secs",
-            "86400",
-        ])
-        .expect("serve with max-session-lifetime should parse");
+        let cli = Cli::try_parse_from(["pali", "serve", "--max-session-lifetime-secs", "86400"])
+            .expect("serve with max-session-lifetime should parse");
         match cli.command {
             Some(Command::Serve(args)) => assert_eq!(args.max_session_lifetime_secs, 86400),
             _ => panic!("expected Serve command"),
@@ -1593,7 +1582,7 @@ mod tests {
     #[test]
     fn test_cli_auth_login_k8s_namespace_override() {
         let cli = Cli::try_parse_from([
-            "memory-mcp",
+            "pali",
             "auth",
             "login",
             "--store",

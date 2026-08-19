@@ -35,7 +35,7 @@ access, or as a one-off Kubernetes Job using the `memory-mcp-bootstrap`
 ServiceAccount (see `deploy/k8s/rbac.yml`):
 
 ```bash
-memory-mcp auth login \
+pali auth login \
   --store k8s-secret \
   --k8s-namespace memory-mcp \
   --k8s-secret-name memory-mcp-github-token

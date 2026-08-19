@@ -20,7 +20,7 @@ const TOKEN_FILE: &str = ".config/memory-mcp/token";
 // StoreBackend — where to persist a newly acquired token
 // ---------------------------------------------------------------------------
 
-/// Token storage backend selection for `memory-mcp auth login`.
+/// Token storage backend selection for `pali auth login`.
 #[derive(Clone, Debug, clap::ValueEnum)]
 #[non_exhaustive]
 pub enum StoreBackend {
@@ -445,7 +445,7 @@ pub fn print_auth_status(provider: &AuthProvider) {
         }
         Err(_) => {
             println!("No token configured.");
-            println!("Run `memory-mcp auth login` to authenticate with GitHub.");
+            println!("Run `pali auth login` to authenticate with GitHub.");
         }
     }
 }

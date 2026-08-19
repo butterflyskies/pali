@@ -225,7 +225,7 @@ pub async fn device_flow_login(
                         "auth.device_flow: device code expired during poll"
                     );
                     return Err(MemoryError::OAuth(
-                        "device code expired; please run `memory-mcp auth login` again".to_string(),
+                        "device code expired; please run `pali auth login` again".to_string(),
                     ));
                 }
                 Some("access_denied") => {

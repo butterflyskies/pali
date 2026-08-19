@@ -57,7 +57,7 @@ The ranked lists are merged with reciprocal rank fusion. A result includes:
 Lower non-negative distances are more similar. Do not interpret `-1.0` as a
 high-confidence semantic match; it means the result had no embedding distance.
 
-If a lexical-index update fails or is interrupted, memory-mcp marks that
+If a lexical-index update fails or is interrupted, Pali marks that
 derived index degraded rather than serving stale keyword results. Recall
 continues with semantic-only results while a single-flight background repair
 rebuilds the lexical index from the git-backed source of truth.

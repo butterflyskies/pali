@@ -1135,7 +1135,7 @@ mod tests {
         let default_repo = Arc::new(
             MemoryRepo::init_or_open(
                 default_dir.path(),
-                Some("file:///nonexistent/memory-mcp-test-remote.git"),
+                Some("file:///nonexistent/pali-test-remote.git"),
             )
             .unwrap(),
         );
@@ -1245,7 +1245,7 @@ mod tests {
         let mappings = vec![
             crate::config::RemoteMapping {
                 scope: "broken".to_string(),
-                url: "file:///nonexistent/memory-mcp-test-remote.git".to_string(),
+                url: "file:///nonexistent/pali-test-remote.git".to_string(),
                 path: Some(broken_dir.path().display().to_string()),
                 branch: None,
             },

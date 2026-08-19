@@ -9,7 +9,7 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
     cargo build --release --features k8s,otlp && \
-    cp target/release/memory-mcp /usr/local/bin/memory-mcp
+    cp target/release/pali /usr/local/bin/pali
 
 # Stage 2: Model download
 # The candle embedding engine downloads model weights from HuggingFace Hub
@@ -22,25 +22,25 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM debian:trixie-slim AS model
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libdbus-1-3 && rm -rf /var/lib/apt/lists/*
 RUN useradd -m -u 1000 app
-COPY --from=builder /usr/local/bin/memory-mcp /usr/local/bin/memory-mcp
+COPY --from=builder /usr/local/bin/pali /usr/local/bin/pali
 USER app
 ENV HF_HOME=/home/app/.cache/huggingface
-RUN /usr/local/bin/memory-mcp warmup
+RUN /usr/local/bin/pali warmup
 
 # Stage 3: Runtime
 FROM debian:trixie-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git libdbus-1-3 && rm -rf /var/lib/apt/lists/*
-RUN useradd -m -u 1000 memory-mcp
-COPY --from=builder /usr/local/bin/memory-mcp /usr/local/bin/memory-mcp
+RUN useradd -m -u 1000 pali
+COPY --from=builder /usr/local/bin/pali /usr/local/bin/pali
 # Copy the pre-warmed model cache from the model stage.
 # --chown avoids a separate chown layer that would double the ~130 MB cache.
-COPY --from=model --chown=memory-mcp:memory-mcp /home/app/.cache/huggingface /home/memory-mcp/.cache/huggingface
-USER memory-mcp
-WORKDIR /home/memory-mcp
+COPY --from=model --chown=pali:pali /home/app/.cache/huggingface /home/pali/.cache/huggingface
+USER pali
+WORKDIR /home/pali
 ENV MEMORY_MCP_BIND=0.0.0.0:8080
 ENV MEMORY_MCP_REPO_PATH=/data/repo
 # Pin HF_HOME so hf-hub finds the pre-warmed model files regardless of CWD.
-ENV HF_HOME=/home/memory-mcp/.cache/huggingface
+ENV HF_HOME=/home/pali/.cache/huggingface
 EXPOSE 8080
-ENTRYPOINT ["memory-mcp"]
+ENTRYPOINT ["pali"]
 CMD ["serve"]

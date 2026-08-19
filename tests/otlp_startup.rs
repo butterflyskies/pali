@@ -39,7 +39,7 @@ async fn otlp_required_construction_failure_sanitizes_stderr_and_exits_nonzero()
     let (_listener, port, endpoint) = live_https_endpoint_with_secret();
     let tmp = tempfile::tempdir().expect("tempdir");
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_memory-mcp"))
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_pali"))
         .args([
             "serve",
             "--repo-path",
@@ -50,7 +50,7 @@ async fn otlp_required_construction_failure_sanitizes_stderr_and_exits_nonzero()
         .env_remove("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
         .output()
         .await
-        .expect("failed to run memory-mcp serve");
+        .expect("failed to run pali serve");
 
     assert!(
         !output.status.success(),
@@ -88,7 +88,7 @@ async fn otlp_optional_construction_failure_sanitizes_warning_and_binds() {
     let stderr_path = tmp.path().join("serve-stderr.log");
     let stderr_file = std::fs::File::create(&stderr_path).expect("create stderr capture file");
 
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_memory-mcp"))
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_pali"))
         .args([
             "serve",
             "--repo-path",
@@ -102,7 +102,7 @@ async fn otlp_optional_construction_failure_sanitizes_warning_and_binds() {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::from(stderr_file))
         .spawn()
-        .expect("failed to start memory-mcp serve");
+        .expect("failed to start pali serve");
 
     // Same readiness budget as the MEMORY_MCP_BIND test: the embedding model
     // loads synchronously before the listener binds.
