@@ -1208,9 +1208,10 @@ impl MemoryServer {
     /// Returns the assigned memory ID on success.
     #[tool(
         name = "remember",
-        description = "Store a new memory. Saves the content to the git-backed repository and \
-        indexes it for semantic search. Use scope '<basename-of-your-cwd>' or 'org/team' for \
-        scoped memories, or omit for global. Returns the assigned memory ID. \
+        description = "Store (write) a new memory. Prefer the canonical `note` tool — `remember` \
+        is the same operation under its original name. Saves the content to the git-backed \
+        repository and indexes it for semantic search. Use scope '<basename-of-your-cwd>' or \
+        'org/team' for scoped memories, or omit for global. Returns the assigned memory ID. \
         IMPORTANT: Never store credentials, API keys, tokens, passwords, or other secrets — \
         memories are plaintext files in a git repo and may be synced to a remote."
     )]
@@ -1307,6 +1308,24 @@ impl MemoryServer {
         }
         .instrument(span)
         .await
+    }
+
+    /// Write a new memory. Canonical entry point for memory writes; routed to
+    /// the same handler as [`remember`](Self::remember).
+    #[tool(
+        name = "note",
+        description = "Write a new memory. Saves the content to the git-backed repository and \
+        indexes it for semantic search. Use scope '<basename-of-your-cwd>' or 'org/team' for \
+        scoped memories, or omit for global. Returns the assigned memory ID. \
+        IMPORTANT: Never store credentials, API keys, tokens, passwords, or other secrets — \
+        memories are plaintext files in a git repo and may be synced to a remote."
+    )]
+    async fn note(
+        &self,
+        args: Parameters<RememberArgs>,
+        parts: Extension<http::request::Parts>,
+    ) -> Result<String, ErrorData> {
+        self.remember(args, parts).await
     }
 
     /// Search memories by semantic similarity to a natural-language query.
@@ -2599,6 +2618,24 @@ mod tests {
             !logs.contains("server_processing_duration_ms="),
             "edit-stage logs must not reuse the authoritative tool-boundary field; logs: {logs}"
         );
+    }
+
+    /// Regression guard: `note` must stay registered alongside `remember`
+    /// with a byte-identical input schema, so callers can use either name
+    /// interchangeably.
+    #[test]
+    fn note_is_registered_with_remember_schema() {
+        let router = MemoryServer::tool_router();
+        let tools = router.list_all();
+        let find = |name: &str| {
+            tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("tool {name} not registered"))
+        };
+        let remember = find("remember");
+        let note = find("note");
+        assert_eq!(note.input_schema, remember.input_schema);
     }
 
     #[test]
