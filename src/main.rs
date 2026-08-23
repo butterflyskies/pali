@@ -778,7 +778,7 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     let repo = Arc::new(repo);
 
     // Load per-scope remote config and build the repo router.
-    let router = {
+    let (router, memory_config) = {
         let config_path = match &args.config {
             Some(p) if p.is_empty() => None,
             Some(p) => Some(expand_path(p)?),
@@ -788,7 +788,7 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
         if let Some(ref path) = config_path {
             let config = pali::config::Config::load(path)
                 .with_context(|| format!("failed to load config from {}", path.display()))?;
-            if config.remotes.is_empty() {
+            let router = if config.remotes.is_empty() {
                 pali::repo_router::RepoRouter::single(Arc::clone(&repo))
             } else {
                 pali::repo_router::RepoRouter::from_config(
@@ -798,9 +798,13 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
                     &health.sync,
                 )
                 .context("failed to initialise scope-specific repos from config")?
-            }
+            };
+            (router, config)
         } else {
-            pali::repo_router::RepoRouter::single(Arc::clone(&repo))
+            (
+                pali::repo_router::RepoRouter::single(Arc::clone(&repo)),
+                pali::config::Config::default(),
+            )
         }
     };
 
@@ -923,7 +927,11 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
     let ct_child = ct.child_token();
 
     let service = StreamableHttpService::new(
-        move || Ok(MemoryServer::new(Arc::clone(&state))),
+        move || {
+            MemoryServer::with_config(Arc::clone(&state), &memory_config).map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, error.to_string())
+            })
+        },
         {
             let mut builder = BoundedSessionManagerBuilder::new(args.max_sessions);
             if args.idle_timeout_secs == 0 && args.max_session_lifetime_secs == 0 {

@@ -1,0 +1,58 @@
+name: Forgejo CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: forgejo-ci-${{ forgejo.ref }}
+  cancel-in-progress: ${{ forgejo.event_name == 'pull_request' }}
+
+permissions: {}
+
+jobs:
+  linux:
+    runs-on: docker
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: https://data.forgejo.org/actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install system dependencies
+        run: apt-get update && apt-get install -y libdbus-1-dev pkg-config
+
+      - name: Install Rust toolchain
+        uses: https://github.com/dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-03-27)
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Lint default features
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Lint all features
+        run: cargo clippy --workspace --all-features -- -D warnings
+
+      - name: Install cargo-nextest
+        run: |
+          curl -fsSL "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.136/cargo-nextest-0.9.136-x86_64-unknown-linux-gnu.tar.gz" \
+            -o /tmp/cargo-nextest.tar.gz
+          echo "a098eed56f2dd88c7fdca1e554a6b99fa1ffbd2a7a1c41b865700112981f6f52  /tmp/cargo-nextest.tar.gz" | sha256sum -c -
+          tar xzf /tmp/cargo-nextest.tar.gz -C /usr/local/bin
+
+      - name: Test default features
+        run: cargo nextest run --workspace --no-fail-fast
+
+      - name: Test all features
+        run: cargo nextest run --workspace --no-fail-fast --all-features
+
+      - name: Audit dependencies
+        uses: https://github.com/EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check

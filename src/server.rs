@@ -40,8 +40,10 @@ fn extract_session_id(parts: &http::request::Parts) -> String {
 }
 
 use crate::{
+    config::Config,
     embedding::EmbeddingBackend,
     error::MemoryError,
+    federation::{Federation, StoreReadResult, StoreReadStatus},
     index::VectorStore,
     recall_log::{BatchVerdict, RecallLog, RecallResult},
     repo::{traced_spawn_blocking, MemoryRepo},
@@ -53,7 +55,7 @@ use crate::{
     types::{
         parse_qualified_name, AppState, BatchMarkAppliedArgs, EditArgs, ForgetArgs, ListField,
         ListToolArgs, MarkAppliedArgs, Memory, MemoryMetadata, MemoryName, MemoryRef, MoveArgs,
-        PullResult, ReadArgs, RecallArgs, RecallStatsArgs, ReindexStats, RememberArgs,
+        PullResult, ReadToolArgs, RecallArgs, RecallStatsArgs, ReindexStats, RememberArgs,
         ResolvedChanges, Scope, ScopeFilter, SyncArgs, LIST_MAX_LIMIT,
     },
 };
@@ -74,10 +76,39 @@ struct OwnedBatchVerdict {
 #[derive(Clone)]
 pub struct MemoryServer {
     state: Arc<AppState>,
+    federation: Federation,
     // Read by the #[tool_router] macro-generated ServerHandler impl;
     // rustc's dead-code analysis can't see through proc-macro output.
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
+}
+
+/// Extract an opaque bearer delegation from an inbound request.
+///
+/// The returned token excludes the `Bearer` prefix. Invalid or non-bearer
+/// authorization values are treated as absent and are never logged.
+fn extract_bearer(parts: &http::request::Parts) -> Option<String> {
+    let value = parts
+        .headers
+        .get(http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
+    let (scheme, credential) = value.split_once(' ')?;
+    let credential = credential.trim();
+    (scheme.eq_ignore_ascii_case("bearer") && !credential.is_empty()).then(|| credential.to_owned())
+}
+
+fn memory_value(memory: Memory) -> serde_json::Value {
+    serde_json::json!({
+        "id": memory.id,
+        "name": memory.name,
+        "scope": memory.metadata.scope.to_string(),
+        "tags": memory.metadata.tags,
+        "content": memory.content,
+        "source": memory.metadata.source,
+        "created_at": memory.metadata.created_at,
+        "updated_at": memory.metadata.updated_at,
+    })
 }
 
 /// Maximum allowed content size in bytes (1 MiB).
@@ -1196,8 +1227,18 @@ impl MemoryServer {
     pub fn new(state: Arc<AppState>) -> Self {
         Self {
             state,
+            federation: Federation::default(),
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Create a server with validated sibling-store topology.
+    pub fn with_config(state: Arc<AppState>, config: &Config) -> Result<Self, MemoryError> {
+        Ok(Self {
+            state,
+            federation: Federation::from_config(config)?,
+            tool_router: Self::tool_router(),
+        })
     }
 
     /// Store a new memory in the git-backed repository.
@@ -1971,26 +2012,65 @@ impl MemoryServer {
         name = "read",
         description = "Read a specific memory by name. Use a bare path scope like '<basename-of-your-cwd>' for \
         scoped memories or omit for global. Returns the full markdown content and metadata \
-        (id, scope, tags, timestamps) as a JSON object."
+        (id, scope, tags, timestamps) as a JSON object. Set straddle=true to read the same \
+        name from every configured sibling store with per-store provenance and partial-failure status."
     )]
     async fn read(
         &self,
-        Parameters(args): Parameters<ReadArgs>,
+        Parameters(args): Parameters<ReadToolArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<String, ErrorData> {
         let name = MemoryName::new(args.name).map_err(ErrorData::from)?;
         let session_id = extract_session_id(&parts);
+        let bearer = args.straddle.then(|| extract_bearer(&parts)).flatten();
         let span = tracing::info_span!(
             "handler.read",
             session_id = %session_id,
             name = %name,
             scope = ?args.scope,
+            straddle = args.straddle,
         );
         let state = Arc::clone(&self.state);
+        let federation = self.federation.clone();
         async move {
             let scope = Scope::parse_or_default(args.scope.as_deref()).map_err(ErrorData::from)?;
 
             let start = Instant::now();
+            if args.straddle {
+                let scope_label = scope.to_string();
+                let (local, mut stores) = tokio::join!(
+                    state.router.read_memory(&name, &scope),
+                    federation.read_siblings(&name, &scope_label, bearer),
+                );
+                let local = match local {
+                    Ok(memory) => StoreReadResult::found(memory_value(memory)),
+                    Err(MemoryError::NotFound { .. }) => {
+                        StoreReadResult::status(StoreReadStatus::NotFound)
+                    }
+                    Err(error) => {
+                        warn!(error = %error, "local store failed during straddled read");
+                        StoreReadResult::status(StoreReadStatus::Unreachable)
+                    }
+                };
+                let degraded =
+                    local.is_degraded() || stores.values().any(StoreReadResult::is_degraded);
+                stores.insert(federation.store_id().to_owned(), local);
+                info!(
+                    ms = start.elapsed().as_millis(),
+                    name = %name,
+                    stores = stores.len(),
+                    degraded,
+                    "read memory across stores"
+                );
+                return Ok(serde_json::json!({
+                    "name": name,
+                    "scope": scope_label,
+                    "stores": stores,
+                    "degraded": degraded,
+                })
+                .to_string());
+            }
+
             let memory = state
                 .router
                 .read_memory(&name, &scope)
@@ -2002,17 +2082,7 @@ impl MemoryServer {
                 "read memory"
             );
 
-            Ok(serde_json::json!({
-                "id": memory.id,
-                "name": memory.name,
-                "scope": memory.metadata.scope.to_string(),
-                "tags": memory.metadata.tags,
-                "content": memory.content,
-                "source": memory.metadata.source,
-                "created_at": memory.metadata.created_at,
-                "updated_at": memory.metadata.updated_at,
-            })
-            .to_string())
+            Ok(memory_value(memory).to_string())
         }
         .instrument(span)
         .await
@@ -2636,6 +2706,29 @@ mod tests {
         let remember = find("remember");
         let note = find("note");
         assert_eq!(note.input_schema, remember.input_schema);
+    }
+
+    #[test]
+    fn bearer_extraction_accepts_only_nonempty_bearer_credentials() {
+        let parts_with = |value: &str| {
+            http::Request::builder()
+                .header(http::header::AUTHORIZATION, value)
+                .body(())
+                .unwrap()
+                .into_parts()
+                .0
+        };
+
+        assert_eq!(
+            extract_bearer(&parts_with("Bearer opaque-token")).as_deref(),
+            Some("opaque-token")
+        );
+        assert_eq!(
+            extract_bearer(&parts_with("bearer second-token")).as_deref(),
+            Some("second-token")
+        );
+        assert!(extract_bearer(&parts_with("Basic nope")).is_none());
+        assert!(extract_bearer(&parts_with("Bearer   ")).is_none());
     }
 
     #[test]
@@ -3540,6 +3633,72 @@ mod tests {
                     Extension(parts()),
                 )
                 .await
+        }
+
+        #[tokio::test]
+        async fn read_without_straddle_preserves_legacy_response_shape() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let state = test_state(&tmp);
+            let server = MemoryServer::new(Arc::clone(&state));
+            remember(&server, "person-cammy", "hello")
+                .await
+                .expect("remember");
+
+            let response = server
+                .read(
+                    Parameters(ReadToolArgs {
+                        name: "person-cammy".into(),
+                        scope: None,
+                        straddle: false,
+                    }),
+                    Extension(parts()),
+                )
+                .await
+                .expect("read");
+            let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+            assert_eq!(response["content"], "hello");
+            assert!(response.get("stores").is_none());
+            assert!(response.get("degraded").is_none());
+        }
+
+        #[tokio::test]
+        async fn straddled_read_without_identity_returns_local_and_marks_siblings() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let state = test_state(&tmp);
+            let config: Config = toml::from_str(
+                r#"
+store_id = "personal"
+[siblings]
+fcc = "http://127.0.0.1:9/mcp"
+"#,
+            )
+            .unwrap();
+            let server = MemoryServer::with_config(Arc::clone(&state), &config).expect("config");
+            remember(&server, "person-cammy", "private hello")
+                .await
+                .expect("remember");
+
+            let response = server
+                .read(
+                    Parameters(ReadToolArgs {
+                        name: "person-cammy".into(),
+                        scope: None,
+                        straddle: true,
+                    }),
+                    Extension(parts()),
+                )
+                .await
+                .expect("straddled read");
+            let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+            assert_eq!(response["stores"]["personal"]["status"], "found");
+            assert_eq!(
+                response["stores"]["personal"]["memory"]["content"],
+                "private hello"
+            );
+            assert_eq!(response["stores"]["fcc"]["status"], "identity_unavailable");
+            assert_eq!(response["degraded"], true);
         }
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

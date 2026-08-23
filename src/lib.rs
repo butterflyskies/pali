@@ -15,6 +15,8 @@ pub mod config;
 pub mod embedding;
 /// Error types used throughout the crate.
 pub mod error;
+/// Federated, custody-preserving reads across configured sibling Pali stores.
+pub mod federation;
 /// Filesystem utilities — atomic writes, path helpers, crash-safe temp-file-then-rename.
 pub mod fs_util;
 /// HTTP health-check handlers (`/readyz`).

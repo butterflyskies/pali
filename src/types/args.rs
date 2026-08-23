@@ -161,6 +161,22 @@ pub struct ReadArgs {
     pub scope: Option<String>,
 }
 
+/// Wire arguments for the additive federated `read` MCP mode.
+///
+/// Kept crate-private so adding the optional JSON field does not break Rust
+/// callers that construct the legacy public [`ReadArgs`].
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub(crate) struct ReadToolArgs {
+    /// Exact name of the memory to read.
+    pub name: String,
+    /// Scope of the memory. Defaults to `global`.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// Read the same name from every configured sibling store.
+    #[serde(default)]
+    pub straddle: bool,
+}
+
 /// Agent's assessment of whether a recalled memory was useful.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -584,6 +600,23 @@ mod tests {
     }
 
     #[test]
+    fn read_tool_args_preserves_legacy_defaults() {
+        let args: ReadToolArgs = serde_json::from_str(r#"{"name":"person-cammy"}"#).unwrap();
+        assert_eq!(args.name, "person-cammy");
+        assert_eq!(args.scope, None);
+        assert!(!args.straddle);
+    }
+
+    #[test]
+    fn read_tool_args_accepts_straddle() {
+        let args: ReadToolArgs =
+            serde_json::from_str(r#"{"name":"person-cammy","scope":"global","straddle":true}"#)
+                .unwrap();
+        assert_eq!(args.scope.as_deref(), Some("global"));
+        assert!(args.straddle);
+    }
+
+    #[test]
     fn batch_mark_applied_deserializes_minimal() {
         let json = r#"{
             "verdicts": [
@@ -679,5 +712,17 @@ mod tests {
                 "fields schema must advertise '{field}': {serialized}"
             );
         }
+    }
+
+    #[test]
+    fn read_schema_exposes_optional_straddle_input() {
+        let schema = schemars::schema_for!(ReadToolArgs);
+        let root = serde_json::to_value(&schema).unwrap();
+        let props = root["properties"].as_object().unwrap();
+        assert!(props.contains_key("name"));
+        assert!(props.contains_key("scope"));
+        assert!(props.contains_key("straddle"));
+        let required = root["required"].as_array().unwrap();
+        assert_eq!(required, &[serde_json::json!("name")]);
     }
 }

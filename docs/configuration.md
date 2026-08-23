@@ -10,7 +10,7 @@ authoritative list.
 |---|---|---|---|
 | `--bind` | `MEMORY_MCP_BIND` | `127.0.0.1:8080` | HTTP listener address |
 | `--repo-path` | `MEMORY_MCP_REPO_PATH` | `~/.memory-mcp` | Git-backed memory repository |
-| `--config` | `MEMORY_MCP_CONFIG` | `~/.config/memory-mcp/config.toml` | TOML config file for per-scope remote mapping; empty string disables config loading |
+| `--config` | `MEMORY_MCP_CONFIG` | `~/.config/memory-mcp/config.toml` | TOML config file for remote mapping and sibling-store topology; empty string disables config loading |
 | `--mcp-path` | `MEMORY_MCP_PATH` | `/mcp` | Streamable HTTP MCP path |
 | `--remote-url` | `MEMORY_MCP_REMOTE_URL` | unset | Git remote; omit for local-only mode |
 | `--branch` | `MEMORY_MCP_BRANCH` | `main` | Branch used for push and pull |
@@ -56,6 +56,35 @@ Builds with the `k8s` feature also support `--store k8s-secret`.
 
 At runtime, token resolution checks `MEMORY_MCP_GITHUB_TOKEN`, then the token
 file, then the system keyring. Tokens are never accepted as CLI arguments.
+
+This authentication config is for outbound Git synchronization. Federated
+memory reads do not use it and never borrow a server credential.
+
+## Federated sibling stores
+
+Name this Pali instance and its trusted sibling MCP endpoints in the same TOML
+file used for per-scope remotes:
+
+```toml
+store_id = "personal"
+straddle_timeout_ms = 2000
+
+[siblings]
+fcc = "https://friends-collective-conscious.svc.echoes/mcp"
+lcc = "https://collective-conscious.svc.echoes/mcp"
+```
+
+Then call `read` with `straddle: true` to query the local store and all
+siblings concurrently. The response keeps each fragment under its `store_id`
+and distinguishes `not_found`, `unreachable`, and `identity_unavailable`.
+Ordinary `read` calls retain their existing response shape.
+
+Sibling endpoints are topology, not authority. They must use HTTPS (except
+loopback HTTP for tests) and cannot contain credentials, query parameters, or
+fragments. A straddled request forwards the caller's inbound bearer token
+opaquely to each configured sibling. Without that caller delegation, Pali
+returns the local result, marks each sibling `identity_unavailable`, and makes
+no sibling requests.
 
 ## Embedding model
 

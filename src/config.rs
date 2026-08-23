@@ -1,10 +1,14 @@
-//! Configuration file parsing for per-scope remote mapping.
+//! Configuration file parsing for per-scope remotes and sibling stores.
 //!
 //! When a config file exists (`~/.config/memory-mcp/config.toml` or the path
 //! in `MEMORY_MCP_CONFIG`), it defines scope-to-repo mappings that route
-//! specific scopes to dedicated git repositories with their own remotes.
+//! specific scopes to dedicated git repositories with their own remotes. The
+//! same file can name trusted sibling Pali endpoints for federated reads.
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use serde::Deserialize;
 use tracing::info;
@@ -30,12 +34,43 @@ pub struct RemoteMapping {
 }
 
 /// Top-level config file structure.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[non_exhaustive]
 pub struct Config {
     /// Per-scope remote mappings.
     #[serde(default)]
     pub remotes: Vec<RemoteMapping>,
+    /// Stable provenance label for this Pali instance. Defaults to `local`.
+    #[serde(default = "default_store_id")]
+    pub store_id: String,
+    /// Trusted sibling MCP endpoints keyed by their provenance label.
+    ///
+    /// This is topology only. Credentials are supplied by each caller and
+    /// must never be stored here.
+    #[serde(default)]
+    pub siblings: BTreeMap<String, String>,
+    /// Whole-request deadline for a straddled sibling read.
+    #[serde(default = "default_straddle_timeout_ms")]
+    pub straddle_timeout_ms: u64,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            remotes: Vec::new(),
+            store_id: default_store_id(),
+            siblings: BTreeMap::new(),
+            straddle_timeout_ms: default_straddle_timeout_ms(),
+        }
+    }
+}
+
+fn default_store_id() -> String {
+    "local".to_owned()
+}
+
+const fn default_straddle_timeout_ms() -> u64 {
+    2_000
 }
 
 impl Config {
@@ -83,12 +118,60 @@ impl Config {
                 })?;
             }
         }
+        config.validate_siblings()?;
         info!(
             path = %path.display(),
             remotes = config.remotes.len(),
+            siblings = config.siblings.len(),
             "loaded config"
         );
         Ok(config)
+    }
+
+    /// Validate sibling topology independently of deserialization.
+    ///
+    /// The MCP server calls this again when library users supply a `Config`
+    /// directly, so an unvalidated struct can never bypass TLS or embedded-
+    /// credential constraints.
+    pub(crate) fn validate_siblings(&self) -> Result<(), MemoryError> {
+        validate_store_id(&self.store_id, "store_id")?;
+        if self.straddle_timeout_ms == 0 {
+            return Err(MemoryError::InvalidInput {
+                reason: "straddle_timeout_ms must be greater than zero".into(),
+            });
+        }
+        for (store_id, endpoint) in &self.siblings {
+            validate_store_id(store_id, "sibling store id")?;
+            if store_id == &self.store_id {
+                return Err(MemoryError::InvalidInput {
+                    reason: format!("sibling store id '{store_id}' collides with store_id"),
+                });
+            }
+            let url = reqwest::Url::parse(endpoint).map_err(|_| MemoryError::InvalidInput {
+                reason: format!("invalid sibling endpoint for store '{store_id}'"),
+            })?;
+            let loopback_http = url.scheme() == "http"
+                && url
+                    .host_str()
+                    .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "::1"));
+            if url.scheme() != "https" && !loopback_http {
+                return Err(MemoryError::InvalidInput {
+                    reason: format!("sibling endpoint for store '{store_id}' must use https (http is allowed only for loopback tests)"),
+                });
+            }
+            if !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+            {
+                return Err(MemoryError::InvalidInput {
+                    reason: format!(
+                        "sibling endpoint for store '{store_id}' must not contain credentials, query parameters, or fragments"
+                    ),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Resolve the config file path from the environment or default location.
@@ -103,6 +186,23 @@ impl Config {
         let config_dir = dirs::config_dir()
             .ok_or_else(|| MemoryError::Internal("could not determine config directory".into()))?;
         Ok(config_dir.join("memory-mcp").join("config.toml"))
+    }
+}
+
+fn validate_store_id(value: &str, field: &str) -> Result<(), MemoryError> {
+    let valid = !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    if valid {
+        Ok(())
+    } else {
+        Err(MemoryError::InvalidInput {
+            reason: format!(
+                "invalid {field} '{value}'; use 1-64 ASCII letters, digits, '-' or '_'"
+            ),
+        })
     }
 }
 
@@ -173,6 +273,80 @@ url = "git@github.com:org/team-memories.git"
     fn empty_config_has_no_remotes() {
         let config: Config = toml::from_str("").unwrap();
         assert!(config.remotes.is_empty());
+        assert_eq!(config.store_id, "local");
+        assert!(config.siblings.is_empty());
+        assert_eq!(config.straddle_timeout_ms, 2_000);
+    }
+
+    #[test]
+    fn parse_federation_topology_without_credentials() {
+        let config: Config = toml::from_str(
+            r#"
+store_id = "personal"
+straddle_timeout_ms = 750
+
+[siblings]
+fcc = "https://friends.example/mcp"
+lcc = "https://lacuna.example/mcp"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.store_id, "personal");
+        assert_eq!(config.straddle_timeout_ms, 750);
+        assert_eq!(config.siblings["fcc"], "https://friends.example/mcp");
+    }
+
+    #[test]
+    fn load_rejects_local_store_collision() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+store_id = "personal"
+[siblings]
+personal = "https://personal.example/mcp"
+"#,
+        )
+        .unwrap();
+
+        let error = Config::load(&path).expect_err("store collision must fail startup");
+        assert!(error.to_string().contains("collides with store_id"));
+    }
+
+    #[test]
+    fn load_rejects_plaintext_non_loopback_sibling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[siblings]
+fcc = "http://friends.example/mcp"
+"#,
+        )
+        .unwrap();
+
+        let error = Config::load(&path).expect_err("plaintext remote sibling must fail startup");
+        assert!(error.to_string().contains("must use https"));
+    }
+
+    #[test]
+    fn load_rejects_credentials_in_sibling_endpoint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[siblings]
+fcc = "https://token@friends.example/mcp"
+"#,
+        )
+        .unwrap();
+
+        let error = Config::load(&path).expect_err("endpoint credentials must fail startup");
+        assert!(error.to_string().contains("must not contain credentials"));
     }
 
     #[test]
