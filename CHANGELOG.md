@@ -1,12 +1,32 @@
 ## [Unreleased]
 
+## [0.18.0] - 2026-08-22
+
 ### Behavior changes — read before upgrading
 
 - **Release assets are renamed from `memory-mcp` to `pali`.** Published release archives change from `memory-mcp-<version>-<target>.tar.gz` (plus `.sha256`) to `pali-<version>-<target>.tar.gz`, and the packaged executable inside changes from `memory-mcp` to `pali`. **Migration:** this is a clean cutover, effective the first `pali`-named release — no compatibility aliases or duplicate `memory-mcp`-named assets are published alongside the new ones. Scripts, CI jobs, or manifests that pin the old asset or executable names must update to the `pali` equivalents before upgrading past that release.
 
 ### Added
 
+- **`note` tool alias for `remember`:** both names use the same input schema and
+  storage operation. `note` is the preferred canonical name; `remember`
+  remains available for compatibility.
+- **Federated straddled reads** (ADR-0044): a named Pali instance can query its
+  local store and configured sibling MCP endpoints concurrently with bounded
+  timeouts. Every fragment retains `store_id` provenance, sibling failures do
+  not discard a successful local result, recursive fan-out is prohibited, and
+  the caller's bearer token is propagated rather than replaced by ambient
+  service credentials. Without caller identity, Pali serves the local read and
+  marks siblings `identity_unavailable` without contacting them. Omitting
+  `straddle` preserves the existing read response shape.
 - **Chunk-addressable retrieval contract** (#262 slice 1, ADR-0042): typed identity and wire shapes for fact-level retrieval units — deterministic `FactId` (parent id + chunker version + source span + content digest, canonical `fact:v1:...` string form), validated non-empty UTF-8 `SourceSpan`, `ChunkerVersion`, and the crate-internal catalog (`FactRecord`) and recall-provenance (`MatchedChunk`) shapes, which go public when their slices wire them. Contract only — no behavioral wiring; the deterministic chunker, derived catalog, chunk indexes, and response wiring land in later slices. `MemoryRef` gains strict `Serialize`/`Deserialize` support for shapes that embed a parent reference. Existing whole-memory retrieval is unchanged. ADR-0042 carries the #262 invariant ledger (each invariant mapped to enforcement, test, and owning slice) and the index-persistence posture; `proptest` lands as a dev-dependency seeding the repository's property-based-testing layer (serde round-trip totality, canonical-form totality, span validity, and collision-resistance evidence over generated inputs).
+
+### Dependencies
+
+- Upgrade `h2` to 0.4.16 to resolve RUSTSEC-2026-0258 (unbounded processing of
+  empty DATA frames), refresh the locked dependency graph, and explicitly
+  allow the CDLA-Permissive-2.0 license only for `webpki-root-certs` and the
+  existing `webpki-roots` package.
 
 ## [0.17.2] - 2026-08-06
 

@@ -2639,7 +2639,7 @@ dependencies = [
 
 [[package]]
 name = "pali"
-version = "0.17.2"
+version = "0.18.0"
 dependencies = [
  "anyhow",
  "arc-swap",
