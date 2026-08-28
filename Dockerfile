@@ -37,8 +37,8 @@ COPY --from=builder /usr/local/bin/pali /usr/local/bin/pali
 COPY --from=model --chown=pali:pali /home/app/.cache/huggingface /home/pali/.cache/huggingface
 USER pali
 WORKDIR /home/pali
-ENV MEMORY_MCP_BIND=0.0.0.0:8080
-ENV MEMORY_MCP_REPO_PATH=/data/repo
+ENV PALI_BIND=0.0.0.0:8080
+ENV PALI_REPO_PATH=/data/repo
 # Pin HF_HOME so hf-hub finds the pre-warmed model files regardless of CWD.
 ENV HF_HOME=/home/pali/.cache/huggingface
 EXPOSE 8080

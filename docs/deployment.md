@@ -54,8 +54,8 @@ kubectl create secret generic memory-mcp-github-token \
 
 Edit `deploy/k8s/deployment.yml`:
 - Set `image:` to your registry/image:tag
-- Uncomment and set `MEMORY_MCP_REMOTE_URL` to your private GitHub repository URL
-- Uncomment the `MEMORY_MCP_GITHUB_TOKEN` secretKeyRef block (required when using a remote)
+- Uncomment and set `PALI_REMOTE_URL` to your private GitHub repository URL
+- Uncomment the `PALI_GITHUB_TOKEN` secretKeyRef block (required when using a remote)
 
 Then apply:
 

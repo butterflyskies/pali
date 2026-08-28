@@ -1,4 +1,7 @@
-//! Integration tests for `auth login`, `auth status`, and `MEMORY_MCP_BIND`.
+//! Integration tests for `auth login`, `auth status`, and `PALI_BIND`.
+
+#[path = "common/subprocess.rs"]
+mod subprocess_support;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -156,9 +159,9 @@ async fn spawn_mock_server(
 async fn auth_status_no_token_prints_not_configured() {
     let tmp = tempfile::tempdir().expect("tempdir");
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_pali"))
+    let output = subprocess_support::pali_command()
         .args(["auth", "status"])
-        .env_remove("MEMORY_MCP_GITHUB_TOKEN")
+        .env_remove("PALI_GITHUB_TOKEN")
         .env_remove("DBUS_SESSION_BUS_ADDRESS")
         .env_remove("DISPLAY")
         .env("XDG_RUNTIME_DIR", tmp.path())
@@ -180,9 +183,9 @@ async fn auth_status_with_env_token_prints_source_and_preview() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let token = "ghp_test1234abcdefgh";
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_pali"))
+    let output = subprocess_support::pali_command()
         .args(["auth", "status"])
-        .env("MEMORY_MCP_GITHUB_TOKEN", token)
+        .env("PALI_GITHUB_TOKEN", token)
         .env_remove("DBUS_SESSION_BUS_ADDRESS")
         .env("HOME", tmp.path())
         .output()
@@ -204,6 +207,60 @@ async fn auth_status_with_env_token_prints_source_and_preview() {
         !stdout.contains(token),
         "stdout must not contain the full token"
     );
+}
+
+#[tokio::test]
+async fn legacy_environment_prefix_fails_closed_without_logging_values() {
+    let token = "ghp_legacy_token_must_not_leak";
+    let mut command = subprocess_support::pali_command();
+    command
+        .args(["auth", "status"])
+        .env_remove("PALI_GITHUB_TOKEN")
+        .env("MEMORY_MCP_GITHUB_TOKEN", token)
+        .env("MEMORY_MCP_X\nFORGED_LOG_LINE", "unused");
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt as _;
+        command.env(
+            std::ffi::OsString::from_vec(b"MEMORY_MCP_\xFF".to_vec()),
+            "unused",
+        );
+    }
+    let output = command
+        .output()
+        .await
+        .expect("failed to run pali auth status");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("legacy credential variable -> PALI_GITHUB_TOKEN"));
+    assert!(!stderr.contains("MEMORY_MCP_GITHUB_TOKEN"));
+    assert!(!stderr.contains("MEMORY_MCP_X"));
+    assert!(!stderr.contains("\nFORGED_LOG_LINE"));
+    #[cfg(unix)]
+    assert!(stderr.contains("2 unknown legacy-prefixed variable(s)"));
+    #[cfg(not(unix))]
+    assert!(stderr.contains("1 unknown legacy-prefixed variable(s)"));
+    assert!(
+        !stderr.contains(token),
+        "stderr must not contain token values"
+    );
+}
+
+#[tokio::test]
+async fn legacy_environment_prefix_fails_closed_before_clap_early_exit() {
+    for argument in ["--help", "--version"] {
+        let output = subprocess_support::pali_command()
+            .arg(argument)
+            .env("MEMORY_MCP_BIND", "127.0.0.1:9")
+            .output()
+            .await
+            .expect("failed to run pali");
+
+        assert!(!output.status.success(), "{argument} bypassed rejection");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("MEMORY_MCP_BIND -> PALI_BIND"));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -302,7 +359,7 @@ async fn auth_login_device_flow_slow_down_backoff() {
 }
 
 // ---------------------------------------------------------------------------
-// Tests 6 & 7: MEMORY_MCP_BIND env var and CLI override
+// Tests 6 & 7: PALI_BIND env var and CLI override
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -312,9 +369,9 @@ async fn pali_bind_env_var_sets_listen_address() {
     let port = portpicker::pick_unused_port().expect("no free port");
     let bind = format!("127.0.0.1:{port}");
 
-    let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_pali"));
+    let mut cmd = subprocess_support::pali_command();
     cmd.args(["serve", "--repo-path", repo_path])
-        .env("MEMORY_MCP_BIND", &bind)
+        .env("PALI_BIND", &bind)
         .kill_on_drop(true)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -340,8 +397,5 @@ async fn pali_bind_env_var_sets_listen_address() {
     }
 
     child.kill().await.ok();
-    assert!(
-        ready,
-        "server on MEMORY_MCP_BIND={bind} did not become ready"
-    );
+    assert!(ready, "server on PALI_BIND={bind} did not become ready");
 }

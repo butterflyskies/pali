@@ -2091,14 +2091,14 @@ impl MemoryServer {
     /// Synchronise the memory repository with the configured git remote.
     ///
     /// Optionally pulls before pushing (default: true). Requires a GitHub
-    /// token configured via `MEMORY_MCP_GITHUB_TOKEN` or
+    /// token configured via `PALI_GITHUB_TOKEN` or
     /// `~/.config/memory-mcp/token`.
     ///
     /// Returns a status message describing what happened.
     #[tool(
         name = "sync",
         description = "Sync the memory repo with the git remote (push/pull). Requires \
-        MEMORY_MCP_GITHUB_TOKEN or a token file. Returns a status message."
+        PALI_GITHUB_TOKEN or a token file. Returns a status message."
     )]
     async fn sync(
         &self,

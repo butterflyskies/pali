@@ -2,9 +2,9 @@
 #
 # Before applying, customize:
 #   - image: replace YOUR_REGISTRY/memory-mcp:latest with your actual image
-#   - MEMORY_MCP_REMOTE_URL: uncomment and set to your private GitHub repo URL
+#   - PALI_REMOTE_URL: uncomment and set to your private GitHub repo URL
 #     when configuring a remote; omit to run in local-only mode (no push/pull)
-#   - MEMORY_MCP_BRANCH: branch to push/pull (default: main)
+#   - PALI_BRANCH: branch to push/pull (default: main)
 #   - resources: adjust requests/limits for your workload
 #
 # The GitHub token is sourced from the Secret created by secret.yml (or
@@ -48,22 +48,22 @@ spec:
             - containerPort: 8080
               name: http
           env:
-            - name: MEMORY_MCP_BIND
+            - name: PALI_BIND
               value: "0.0.0.0:8080"
-            - name: MEMORY_MCP_REPO_PATH
+            - name: PALI_REPO_PATH
               value: /data/repo
-            # Uncomment and set MEMORY_MCP_REMOTE_URL to your private GitHub
+            # Uncomment and set PALI_REMOTE_URL to your private GitHub
             # repository URL when configuring a remote. Leave commented out to
             # run in local-only mode (no push/pull).
-            # - name: MEMORY_MCP_REMOTE_URL
+            # - name: PALI_REMOTE_URL
             #   value: ""
-            - name: MEMORY_MCP_BRANCH
+            - name: PALI_BRANCH
               value: main
-            # Uncomment the MEMORY_MCP_GITHUB_TOKEN block when MEMORY_MCP_REMOTE_URL
+            # Uncomment the PALI_GITHUB_TOKEN block when PALI_REMOTE_URL
             # is set. The token is sourced from the Secret created by secret.yml or
             # "auth login --store k8s-secret" (key name: token). Not needed for
             # local-only mode.
-            # - name: MEMORY_MCP_GITHUB_TOKEN
+            # - name: PALI_GITHUB_TOKEN
             #   valueFrom:
             #     secretKeyRef:
             #       name: memory-mcp-github-token

@@ -16,3 +16,9 @@ to `main`. Pass it through to push, pull, and any ref-based operations.
 - Works out of the box for `main`-based repos.
 - Users with `master` or custom branches set one flag.
 - Branch name flows through push/pull refspecs — must be used consistently everywhere.
+
+## Amendment (2026-08-27)
+
+Pali 0.19.0 renames the environment-variable prefix without changing this
+decision. Use `PALI_BRANCH`; the former variable name above remains as the
+historical record.

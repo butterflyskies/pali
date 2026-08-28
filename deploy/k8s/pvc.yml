@@ -1,7 +1,7 @@
 # PersistentVolumeClaim for the git-backed memory repository and vector index.
 #
 # The pod mounts this at /data. The git repo lives at /data/repo (controlled by
-# MEMORY_MCP_REPO_PATH) and the vector index is written alongside it at
+# PALI_REPO_PATH) and the vector index is written alongside it at
 # /data/repo/.memory-mcp-index/index.usearch.
 #
 # Adjust the storage size and storageClassName to match your cluster's

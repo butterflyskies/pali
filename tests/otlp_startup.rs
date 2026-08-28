@@ -14,6 +14,9 @@
 //! startup: what reaches stderr and whether the process exits or binds.
 #![cfg(feature = "otlp")]
 
+#[path = "common/subprocess.rs"]
+mod subprocess_support;
+
 use std::time::Duration;
 
 /// A secret that must never appear on stderr.
@@ -39,7 +42,7 @@ async fn otlp_required_construction_failure_sanitizes_stderr_and_exits_nonzero()
     let (_listener, port, endpoint) = live_https_endpoint_with_secret();
     let tmp = tempfile::tempdir().expect("tempdir");
 
-    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_pali"))
+    let output = subprocess_support::pali_command()
         .args([
             "serve",
             "--repo-path",
@@ -88,7 +91,7 @@ async fn otlp_optional_construction_failure_sanitizes_warning_and_binds() {
     let stderr_path = tmp.path().join("serve-stderr.log");
     let stderr_file = std::fs::File::create(&stderr_path).expect("create stderr capture file");
 
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_pali"))
+    let mut child = subprocess_support::pali_command()
         .args([
             "serve",
             "--repo-path",
@@ -97,14 +100,14 @@ async fn otlp_optional_construction_failure_sanitizes_warning_and_binds() {
         ])
         .env("OTEL_EXPORTER_OTLP_ENDPOINT", &endpoint)
         .env_remove("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-        .env("MEMORY_MCP_BIND", &bind)
+        .env("PALI_BIND", &bind)
         .kill_on_drop(true)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::from(stderr_file))
         .spawn()
         .expect("failed to start pali serve");
 
-    // Same readiness budget as the MEMORY_MCP_BIND test: the embedding model
+    // Same readiness budget as the PALI_BIND test: the embedding model
     // loads synchronously before the listener binds.
     let client = reqwest::Client::new();
     let healthz_url = format!("http://{bind}/healthz");

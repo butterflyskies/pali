@@ -13,7 +13,7 @@ TLS gateway and appropriate network policy.
 
 ## Credentials and local files
 
-GitHub tokens are resolved from `MEMORY_MCP_GITHUB_TOKEN`, an owner-readable
+GitHub tokens are resolved from `PALI_GITHUB_TOKEN`, an owner-readable
 token file, or the system keyring. Kubernetes deployments can inject a token
 from a Secret through the environment variable. The CLI does not accept tokens
 as arguments, and credentials are not written to the memory repository. On

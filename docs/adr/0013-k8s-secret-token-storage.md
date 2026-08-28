@@ -22,3 +22,9 @@ hardcoded to prevent drift with the pod spec.
 - `cargo build --features k8s` pulls kube + k8s-openapi (large deps, compile time increase)
 - Re-running `auth login --store k8s-secret` overwrites the Secret (get-then-replace)
 - RBAC for secrets in the target namespace is required
+
+## Amendment (2026-08-27)
+
+Pali 0.19.0 renames the pod environment variable to `PALI_GITHUB_TOKEN`.
+Secret storage, the `token` data key, and the write-only Kubernetes flow are
+unchanged; the former variable name above remains as the historical record.

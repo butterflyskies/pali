@@ -10,10 +10,10 @@ pub mod oauth;
 pub use oauth::{device_flow_login, DeviceFlowProvider, GitHubDeviceFlow};
 
 /// Token resolution order:
-/// 1. `MEMORY_MCP_GITHUB_TOKEN` environment variable
+/// 1. `PALI_GITHUB_TOKEN` environment variable
 /// 2. `~/.config/memory-mcp/token` file
 /// 3. System keyring (GNOME Keyring / KWallet / macOS Keychain)
-const ENV_VAR: &str = "MEMORY_MCP_GITHUB_TOKEN";
+const ENV_VAR: &str = "PALI_GITHUB_TOKEN";
 const TOKEN_FILE: &str = ".config/memory-mcp/token";
 
 // ---------------------------------------------------------------------------
@@ -58,7 +58,7 @@ pub struct K8sSecretConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum TokenSource {
-    /// Token was read from the `MEMORY_MCP_GITHUB_TOKEN` environment variable.
+    /// Token was read from the `PALI_GITHUB_TOKEN` environment variable.
     EnvVar,
     /// Token was read from the `~/.config/memory-mcp/token` file.
     File,
@@ -108,7 +108,7 @@ impl AuthProvider {
     /// [`SecretString`] so it cannot accidentally appear in logs or error chains.
     ///
     /// Checks (in order):
-    /// 1. `MEMORY_MCP_GITHUB_TOKEN` env var
+    /// 1. `PALI_GITHUB_TOKEN` env var
     /// 2. `~/.config/memory-mcp/token` file
     /// 3. System keyring (GNOME Keyring / KWallet / macOS Keychain)
     pub fn resolve_token(&self) -> Result<SecretString, MemoryError> {
@@ -198,7 +198,7 @@ impl AuthProvider {
 
         warn!("auth token resolution failed — no token found in env var, file, or keyring");
         Err(MemoryError::Auth(
-            "no token available; set MEMORY_MCP_GITHUB_TOKEN, add \
+            "no token available; set PALI_GITHUB_TOKEN, add \
              ~/.config/memory-mcp/token, or store a token in the system keyring \
              under service 'memory-mcp', account 'github-token'."
                 .to_string(),

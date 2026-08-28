@@ -1,7 +1,7 @@
 //! Configuration file parsing for per-scope remotes and sibling stores.
 //!
 //! When a config file exists (`~/.config/memory-mcp/config.toml` or the path
-//! in `MEMORY_MCP_CONFIG`), it defines scope-to-repo mappings that route
+//! in `PALI_CONFIG`), it defines scope-to-repo mappings that route
 //! specific scopes to dedicated git repositories with their own remotes. The
 //! same file can name trusted sibling Pali endpoints for federated reads.
 
@@ -177,10 +177,10 @@ impl Config {
     /// Resolve the config file path from the environment or default location.
     ///
     /// Resolution order:
-    /// 1. `MEMORY_MCP_CONFIG` environment variable
+    /// 1. `PALI_CONFIG` environment variable
     /// 2. `~/.config/memory-mcp/config.toml`
     pub fn resolve_path() -> Result<PathBuf, MemoryError> {
-        if let Ok(env_path) = std::env::var("MEMORY_MCP_CONFIG") {
+        if let Ok(env_path) = std::env::var("PALI_CONFIG") {
             return Ok(PathBuf::from(env_path));
         }
         let config_dir = dirs::config_dir()

@@ -32,3 +32,9 @@ When no config file exists, behavior is identical to today: one repo, one remote
 - `move` across repo boundaries requires delete-from-source + create-in-destination (not a single git commit)
 - Auth token must have access to all configured remotes
 - Health reporting aggregates across repos — any repo failure degrades the subsystem
+
+## Amendment (2026-08-27)
+
+Pali 0.19.0 renames the environment-variable prefix without changing the
+configuration-file design. Use `PALI_CONFIG`; the former variable name above
+remains as the historical record.

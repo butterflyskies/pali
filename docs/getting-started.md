@@ -37,8 +37,8 @@ pali warmup
 To change the bind address or repository location:
 
 ```bash
-MEMORY_MCP_BIND=0.0.0.0:9090 \
-MEMORY_MCP_REPO_PATH=/path/to/memories \
+PALI_BIND=0.0.0.0:9090 \
+PALI_REPO_PATH=/path/to/memories \
 pali serve
 ```
 
@@ -111,7 +111,7 @@ Pali works without a remote. To share the repository across machines,
 configure a remote URL when starting the server:
 
 ```bash
-MEMORY_MCP_REMOTE_URL=https://github.com/you/my-memories.git \
+PALI_REMOTE_URL=https://github.com/you/my-memories.git \
 pali serve
 ```
 

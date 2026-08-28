@@ -85,30 +85,30 @@ struct LoginArgs {
 #[derive(Args)]
 struct ServeArgs {
     /// Address to bind the HTTP server to.
-    #[arg(long, default_value = "127.0.0.1:8080", env = "MEMORY_MCP_BIND")]
+    #[arg(long, default_value = "127.0.0.1:8080", env = "PALI_BIND")]
     bind: String,
 
     /// Path to the git-backed memory repository.
-    #[arg(long, default_value = "~/.memory-mcp", env = "MEMORY_MCP_REPO_PATH")]
+    #[arg(long, default_value = "~/.memory-mcp", env = "PALI_REPO_PATH")]
     repo_path: String,
 
     /// Path to the TOML config file for per-scope remote mapping.
     /// Defaults to `~/.config/memory-mcp/config.toml`. Set to an empty
     /// string to disable config loading.
-    #[arg(long, env = "MEMORY_MCP_CONFIG")]
+    #[arg(long, env = "PALI_CONFIG")]
     config: Option<String>,
 
     /// URL path at which the MCP service is mounted.
-    #[arg(long, default_value = "/mcp", env = "MEMORY_MCP_PATH")]
+    #[arg(long, default_value = "/mcp", env = "PALI_PATH")]
     mcp_path: String,
 
     /// Remote URL for the git origin. If set, the origin remote is created or
     /// updated on startup. Omit to run in local-only mode (no push/pull).
-    #[arg(long, env = "MEMORY_MCP_REMOTE_URL")]
+    #[arg(long, env = "PALI_REMOTE_URL")]
     remote_url: Option<String>,
 
     /// Branch name used for push/pull operations.
-    #[arg(long, default_value = "main", env = "MEMORY_MCP_BRANCH")]
+    #[arg(long, default_value = "main", env = "PALI_BRANCH")]
     branch: String,
 
     /// Maximum number of concurrent MCP sessions. Oldest session is evicted
@@ -116,50 +116,42 @@ struct ServeArgs {
     #[arg(
         long,
         default_value_t = 100,
-        env = "MEMORY_MCP_MAX_SESSIONS",
+        env = "PALI_MAX_SESSIONS",
         value_parser = parse_nonzero_usize
     )]
     max_sessions: usize,
 
     /// Maximum number of new sessions allowed within the rate-limit window.
     /// Set to 0 to disable rate limiting.
-    #[arg(long, default_value_t = 10, env = "MEMORY_MCP_SESSION_RATE_LIMIT")]
+    #[arg(long, default_value_t = 10, env = "PALI_SESSION_RATE_LIMIT")]
     session_rate_limit: usize,
 
     /// Duration of the session creation rate-limit window, in seconds.
     /// Set to 0 to disable rate limiting (treated the same as setting
     /// `--session-rate-limit 0`).
-    #[arg(
-        long,
-        default_value_t = 60,
-        env = "MEMORY_MCP_SESSION_RATE_WINDOW_SECS"
-    )]
+    #[arg(long, default_value_t = 60, env = "PALI_SESSION_RATE_WINDOW_SECS")]
     session_rate_window_secs: u64,
 
     /// Idle timeout for MCP sessions, in seconds. Sessions are closed after
     /// this duration of inactivity. Set to 0 to disable (not recommended).
-    #[arg(long, default_value_t = 14400, env = "MEMORY_MCP_IDLE_TIMEOUT_SECS")]
+    #[arg(long, default_value_t = 14400, env = "PALI_IDLE_TIMEOUT_SECS")]
     idle_timeout_secs: u64,
 
     /// Maximum session lifetime in seconds, regardless of activity. Sessions
     /// are closed after this duration even if actively used. Set to 0 to
     /// disable (default).
-    #[arg(
-        long,
-        default_value_t = 0,
-        env = "MEMORY_MCP_MAX_SESSION_LIFETIME_SECS"
-    )]
+    #[arg(long, default_value_t = 0, env = "PALI_MAX_SESSION_LIFETIME_SECS")]
     max_session_lifetime_secs: u64,
 
     /// Additional hostname to accept in the HTTP Host header. Required when
     /// the server is accessed via a reverse proxy or gateway (e.g.
     /// `memory-mcp.svc.echoes`). Can be specified multiple times.
-    #[arg(long, env = "MEMORY_MCP_ALLOWED_HOST")]
+    #[arg(long, env = "PALI_ALLOWED_HOST")]
     allowed_host: Vec<String>,
 
     /// Include remote sync health in readiness checks. When enabled, push/pull
     /// failures will cause /readyz to return 503.
-    #[arg(long, default_value_t = false, env = "MEMORY_MCP_REQUIRE_REMOTE_SYNC")]
+    #[arg(long, default_value_t = false, env = "PALI_REQUIRE_REMOTE_SYNC")]
     require_remote_sync: bool,
 
     /// SQLite busy timeout in seconds for the recall event log.
@@ -167,12 +159,12 @@ struct ServeArgs {
     /// When multiple processes access the recall log concurrently, this
     /// controls how long each connection waits for a database lock before
     /// returning an error.
-    #[arg(long, default_value_t = 5, env = "MEMORY_MCP_RECALL_LOG_BUSY_TIMEOUT")]
+    #[arg(long, default_value_t = 5, env = "PALI_RECALL_LOG_BUSY_TIMEOUT")]
     recall_log_busy_timeout: u64,
 
     /// Seconds after which a subsystem with no successful operations is considered
     /// stale. Set to 0 to disable staleness detection (default).
-    #[arg(long, default_value_t = 0, env = "MEMORY_MCP_HEALTH_STALE_SECS")]
+    #[arg(long, default_value_t = 0, env = "PALI_HEALTH_STALE_SECS")]
     health_stale_secs: u64,
 
     #[command(flatten)]
@@ -183,13 +175,13 @@ struct ServeArgs {
     /// by the batch exporter as usual. Use --otlp-optional for graceful
     /// fallback.
     #[cfg(feature = "otlp")]
-    #[arg(long, default_value_t = false, env = "MEMORY_MCP_OTLP_REQUIRED")]
+    #[arg(long, default_value_t = false, env = "PALI_OTLP_REQUIRED")]
     otlp_required: bool,
 
     /// Enable OTLP span export with graceful fallback: if the collector is
     /// unreachable, log a warning and continue with fmt-only tracing.
     #[cfg(feature = "otlp")]
-    #[arg(long, default_value_t = false, env = "MEMORY_MCP_OTLP_OPTIONAL")]
+    #[arg(long, default_value_t = false, env = "PALI_OTLP_OPTIONAL")]
     otlp_optional: bool,
 }
 
@@ -202,7 +194,7 @@ struct WarmupArgs {
 #[derive(Args)]
 struct RecallStatsArgs {
     /// Path to the recall log database.
-    #[arg(long, env = "MEMORY_MCP_RECALL_LOG")]
+    #[arg(long, env = "PALI_RECALL_LOG")]
     recall_log: Option<String>,
 
     /// Path to the index directory (default: ~/.memory-mcp/.memory-mcp-index).
@@ -217,7 +209,7 @@ struct EmbedArgs {
     #[arg(
         long,
         default_value_t = 30,
-        env = "MEMORY_MCP_EMBED_TIMEOUT_SECS",
+        env = "PALI_EMBED_TIMEOUT_SECS",
         value_parser = parse_nonzero_u64,
     )]
     embed_timeout_secs: u64,
@@ -228,7 +220,7 @@ struct EmbedArgs {
     #[arg(
         long,
         default_value_t = 64,
-        env = "MEMORY_MCP_EMBED_QUEUE_SIZE",
+        env = "PALI_EMBED_QUEUE_SIZE",
         value_parser = parse_nonzero_usize,
     )]
     embed_queue_size: usize,
@@ -627,6 +619,7 @@ async fn main() -> anyhow::Result<()> {
     // otlp: tracing is initialized per-command arm below (serve may activate
     // OTLP export; other commands always use fmt-only).
 
+    reject_legacy_environment()?;
     let cli = Cli::parse();
 
     match cli.command {
@@ -701,6 +694,126 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Refuse a partial 0.19 configuration migration instead of silently using
+/// defaults for legacy environment variables. Values are never inspected or
+/// included in the error because the set can contain credentials.
+fn reject_legacy_environment() -> anyhow::Result<()> {
+    let mut replacements = Vec::new();
+    let mut unknown_count = 0usize;
+    for (name, _) in std::env::vars_os() {
+        match legacy_environment_replacement(&name) {
+            Some(Some(replacement)) => replacements.push(replacement),
+            Some(None) => unknown_count += 1,
+            None => {}
+        }
+    }
+    replacements.sort();
+    replacements.dedup();
+
+    if replacements.is_empty() && unknown_count == 0 {
+        return Ok(());
+    }
+
+    let known = if replacements.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", replacements.join(", "))
+    };
+    let unknown = if unknown_count == 0 {
+        String::new()
+    } else {
+        format!("; {unknown_count} unknown legacy-prefixed variable(s) also set")
+    };
+    anyhow::bail!(
+        "legacy Pali environment variable(s) are not supported{known}{unknown}; update or remove them before starting Pali"
+    )
+}
+
+#[cfg(unix)]
+fn legacy_environment_replacement(name: &std::ffi::OsStr) -> Option<Option<String>> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    const LEGACY_PREFIX: &[u8] = b"MEMORY_MCP_";
+
+    let bytes = name.as_bytes();
+    let prefix = bytes.get(..LEGACY_PREFIX.len())?;
+    if !prefix.eq_ignore_ascii_case(LEGACY_PREFIX) {
+        return None;
+    }
+    let suffix = &bytes[LEGACY_PREFIX.len()..];
+    legacy_suffix_replacement(suffix)
+}
+
+#[cfg(windows)]
+fn legacy_environment_replacement(name: &std::ffi::OsStr) -> Option<Option<String>> {
+    use std::os::windows::ffi::OsStrExt as _;
+
+    const LEGACY_PREFIX: &[u8] = b"MEMORY_MCP_";
+
+    let units: Vec<u16> = name.encode_wide().collect();
+    let prefix = units.get(..LEGACY_PREFIX.len())?;
+    if !prefix.iter().zip(LEGACY_PREFIX).all(|(unit, expected)| {
+        u8::try_from(*unit).is_ok_and(|byte| byte.eq_ignore_ascii_case(expected))
+    }) {
+        return None;
+    }
+    let suffix: Option<Vec<u8>> = units[LEGACY_PREFIX.len()..]
+        .iter()
+        .map(|unit| u8::try_from(*unit).ok())
+        .collect();
+    match suffix {
+        Some(suffix) => legacy_suffix_replacement(&suffix),
+        None => Some(None),
+    }
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn legacy_environment_replacement(name: &std::ffi::OsStr) -> Option<Option<String>> {
+    let canonical_name = name.to_str()?.to_ascii_uppercase();
+    let suffix = canonical_name.strip_prefix("MEMORY_MCP_")?;
+    legacy_suffix_replacement(suffix.as_bytes())
+}
+
+fn legacy_suffix_replacement(suffix: &[u8]) -> Option<Option<String>> {
+    const LEGACY_SUFFIXES: &[&str] = &[
+        "ALLOWED_HOST",
+        "BIND",
+        "BRANCH",
+        "CONFIG",
+        "EMBED_QUEUE_SIZE",
+        "EMBED_TIMEOUT_SECS",
+        "GITHUB_TOKEN",
+        "HEALTH_STALE_SECS",
+        "IDLE_TIMEOUT_SECS",
+        "MAX_SESSIONS",
+        "MAX_SESSION_LIFETIME_SECS",
+        "OTLP_OPTIONAL",
+        "OTLP_REQUIRED",
+        "PATH",
+        "RECALL_LOG",
+        "RECALL_LOG_BUSY_TIMEOUT",
+        "REMOTE_URL",
+        "REPO_PATH",
+        "REQUIRE_REMOTE_SYNC",
+        "SESSION_RATE_LIMIT",
+        "SESSION_RATE_WINDOW_SECS",
+    ];
+
+    let Some(canonical) = LEGACY_SUFFIXES
+        .iter()
+        .find(|candidate| suffix.eq_ignore_ascii_case(candidate.as_bytes()))
+    else {
+        return Some(None);
+    };
+    if *canonical == "GITHUB_TOKEN" {
+        Some(Some(
+            "legacy credential variable -> PALI_GITHUB_TOKEN".to_string(),
+        ))
+    } else {
+        Some(Some(format!("MEMORY_MCP_{canonical} -> PALI_{canonical}")))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Server startup
 // ---------------------------------------------------------------------------
@@ -721,7 +834,7 @@ async fn run_serve(args: ServeArgs) -> anyhow::Result<()> {
         .context("failed to canonicalize repo path")?;
     info!("repo path: {}", repo_path.display());
 
-    // Filter out empty string to treat MEMORY_MCP_REMOTE_URL="" as unset.
+    // Filter out empty string to treat PALI_REMOTE_URL="" as unset.
     let remote_url = args.remote_url.filter(|u| !u.is_empty());
 
     if args.require_remote_sync && remote_url.is_none() {
@@ -1129,7 +1242,147 @@ fn expand_path(path: &str) -> anyhow::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
+
+    #[test]
+    fn runtime_cli_environment_uses_only_pali_prefix() {
+        let command = Cli::command();
+        let mut environment_variables: Vec<String> = command
+            .get_subcommands()
+            .flat_map(|subcommand| subcommand.get_arguments())
+            .filter_map(|argument| argument.get_env())
+            .map(|name| name.to_string_lossy().into_owned())
+            .collect();
+        environment_variables.sort();
+        environment_variables.dedup();
+
+        let mut expected = vec![
+            "PALI_ALLOWED_HOST",
+            "PALI_BIND",
+            "PALI_BRANCH",
+            "PALI_CONFIG",
+            "PALI_EMBED_QUEUE_SIZE",
+            "PALI_EMBED_TIMEOUT_SECS",
+            "PALI_HEALTH_STALE_SECS",
+            "PALI_IDLE_TIMEOUT_SECS",
+            "PALI_MAX_SESSIONS",
+            "PALI_MAX_SESSION_LIFETIME_SECS",
+            "PALI_PATH",
+            "PALI_RECALL_LOG",
+            "PALI_RECALL_LOG_BUSY_TIMEOUT",
+            "PALI_REMOTE_URL",
+            "PALI_REPO_PATH",
+            "PALI_REQUIRE_REMOTE_SYNC",
+            "PALI_SESSION_RATE_LIMIT",
+            "PALI_SESSION_RATE_WINDOW_SECS",
+        ];
+        #[cfg(feature = "otlp")]
+        expected.extend(["PALI_OTLP_OPTIONAL", "PALI_OTLP_REQUIRED"]);
+        expected.sort_unstable();
+
+        assert_eq!(environment_variables, expected);
+    }
+
+    #[test]
+    fn legacy_environment_mapping_is_ascii_case_insensitive() {
+        let mappings = [
+            (
+                "ALLOWED_HOST",
+                "MEMORY_MCP_ALLOWED_HOST -> PALI_ALLOWED_HOST",
+            ),
+            ("BIND", "MEMORY_MCP_BIND -> PALI_BIND"),
+            ("BRANCH", "MEMORY_MCP_BRANCH -> PALI_BRANCH"),
+            ("CONFIG", "MEMORY_MCP_CONFIG -> PALI_CONFIG"),
+            (
+                "EMBED_QUEUE_SIZE",
+                "MEMORY_MCP_EMBED_QUEUE_SIZE -> PALI_EMBED_QUEUE_SIZE",
+            ),
+            (
+                "EMBED_TIMEOUT_SECS",
+                "MEMORY_MCP_EMBED_TIMEOUT_SECS -> PALI_EMBED_TIMEOUT_SECS",
+            ),
+            (
+                "GITHUB_TOKEN",
+                "legacy credential variable -> PALI_GITHUB_TOKEN",
+            ),
+            (
+                "HEALTH_STALE_SECS",
+                "MEMORY_MCP_HEALTH_STALE_SECS -> PALI_HEALTH_STALE_SECS",
+            ),
+            (
+                "IDLE_TIMEOUT_SECS",
+                "MEMORY_MCP_IDLE_TIMEOUT_SECS -> PALI_IDLE_TIMEOUT_SECS",
+            ),
+            (
+                "MAX_SESSIONS",
+                "MEMORY_MCP_MAX_SESSIONS -> PALI_MAX_SESSIONS",
+            ),
+            (
+                "MAX_SESSION_LIFETIME_SECS",
+                "MEMORY_MCP_MAX_SESSION_LIFETIME_SECS -> PALI_MAX_SESSION_LIFETIME_SECS",
+            ),
+            (
+                "OTLP_OPTIONAL",
+                "MEMORY_MCP_OTLP_OPTIONAL -> PALI_OTLP_OPTIONAL",
+            ),
+            (
+                "OTLP_REQUIRED",
+                "MEMORY_MCP_OTLP_REQUIRED -> PALI_OTLP_REQUIRED",
+            ),
+            ("PATH", "MEMORY_MCP_PATH -> PALI_PATH"),
+            ("RECALL_LOG", "MEMORY_MCP_RECALL_LOG -> PALI_RECALL_LOG"),
+            (
+                "RECALL_LOG_BUSY_TIMEOUT",
+                "MEMORY_MCP_RECALL_LOG_BUSY_TIMEOUT -> PALI_RECALL_LOG_BUSY_TIMEOUT",
+            ),
+            ("REMOTE_URL", "MEMORY_MCP_REMOTE_URL -> PALI_REMOTE_URL"),
+            ("REPO_PATH", "MEMORY_MCP_REPO_PATH -> PALI_REPO_PATH"),
+            (
+                "REQUIRE_REMOTE_SYNC",
+                "MEMORY_MCP_REQUIRE_REMOTE_SYNC -> PALI_REQUIRE_REMOTE_SYNC",
+            ),
+            (
+                "SESSION_RATE_LIMIT",
+                "MEMORY_MCP_SESSION_RATE_LIMIT -> PALI_SESSION_RATE_LIMIT",
+            ),
+            (
+                "SESSION_RATE_WINDOW_SECS",
+                "MEMORY_MCP_SESSION_RATE_WINDOW_SECS -> PALI_SESSION_RATE_WINDOW_SECS",
+            ),
+        ];
+
+        assert_eq!(mappings.len(), 21);
+        for (suffix, expected) in mappings {
+            let lowercase_name = format!("memory_mcp_{}", suffix.to_ascii_lowercase());
+            assert_eq!(
+                legacy_environment_replacement(std::ffi::OsStr::new(&lowercase_name))
+                    .flatten()
+                    .as_deref(),
+                Some(expected),
+                "missing or incorrect mapping for {suffix}"
+            );
+        }
+        assert!(legacy_environment_replacement(std::ffi::OsStr::new("UNRELATED_BIND")).is_none());
+        assert_eq!(
+            legacy_environment_replacement(std::ffi::OsStr::new("MEMORY_MCP_UNKNOWN")),
+            Some(None)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_environment_mapping_rejects_ill_formed_utf16_suffix() {
+        use std::os::windows::ffi::OsStringExt as _;
+
+        let mut units: Vec<u16> = "MEMORY_MCP_".encode_utf16().collect();
+        units.push(0xD800);
+        let name = std::ffi::OsString::from_wide(&units);
+        assert_eq!(
+            legacy_environment_replacement(&name),
+            Some(None),
+            "an ill-formed suffix must still be classified as legacy"
+        );
+    }
 
     #[test]
     fn test_cli_bare_has_no_command() {

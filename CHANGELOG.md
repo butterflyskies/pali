@@ -1,5 +1,20 @@
 ## [Unreleased]
 
+## [0.19.0] - 2026-08-27
+
+### Behavior changes — read before upgrading
+
+- **Runtime environment variables now use the `PALI_*` prefix.** This is a
+  clean cutover: every former `MEMORY_MCP_*` runtime/configuration variable is
+  renamed to the corresponding `PALI_*` variable, and the old names are no
+  longer recognized. Update deployment manifests, container environment,
+  secret injection, test harnesses, and other callers at the same time as the
+  `0.19.0` binary or image. A known former variable makes startup fail with an
+  error naming its replacement rather than silently falling back to a default;
+  unknown legacy-prefixed variables are reported only by count. Rollback must
+  restore both the pre-0.19 artifact and its former environment names.
+  Command-line flags and on-disk paths are unchanged.
+
 ## [0.18.0] - 2026-08-22
 
 ### Behavior changes — read before upgrading

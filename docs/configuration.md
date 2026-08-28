@@ -4,35 +4,42 @@ Server options are available as command-line flags and environment variables.
 Run `pali serve --help` against your installed version for the complete,
 authoritative list.
 
+Pali 0.19.0 replaces the former `MEMORY_MCP_*` prefix with `PALI_*` without
+compatibility aliases. A process started with a known former variable exits
+with an error naming its replacement instead of silently using a default;
+unknown legacy-prefixed variables are reported only by count. Upgrade the
+binary or container and its environment atomically. To roll back, restore both
+the pre-0.19 artifact and its former environment names.
+
 ## Server
 
 | Flag | Environment variable | Default | Purpose |
 |---|---|---|---|
-| `--bind` | `MEMORY_MCP_BIND` | `127.0.0.1:8080` | HTTP listener address |
-| `--repo-path` | `MEMORY_MCP_REPO_PATH` | `~/.memory-mcp` | Git-backed memory repository |
-| `--config` | `MEMORY_MCP_CONFIG` | `~/.config/memory-mcp/config.toml` | TOML config file for remote mapping and sibling-store topology; empty string disables config loading |
-| `--mcp-path` | `MEMORY_MCP_PATH` | `/mcp` | Streamable HTTP MCP path |
-| `--remote-url` | `MEMORY_MCP_REMOTE_URL` | unset | Git remote; omit for local-only mode |
-| `--branch` | `MEMORY_MCP_BRANCH` | `main` | Branch used for push and pull |
-| `--allowed-host` | `MEMORY_MCP_ALLOWED_HOST` | none | Additional accepted HTTP Host value; repeatable |
-| `--require-remote-sync` | `MEMORY_MCP_REQUIRE_REMOTE_SYNC` | `false` | Make remote sync health affect readiness |
-| `--recall-log-busy-timeout` | `MEMORY_MCP_RECALL_LOG_BUSY_TIMEOUT` | `5` | SQLite lock wait in seconds |
-| `--health-stale-secs` | `MEMORY_MCP_HEALTH_STALE_SECS` | `0` | Mark inactive subsystems stale; 0 disables |
+| `--bind` | `PALI_BIND` | `127.0.0.1:8080` | HTTP listener address |
+| `--repo-path` | `PALI_REPO_PATH` | `~/.memory-mcp` | Git-backed memory repository |
+| `--config` | `PALI_CONFIG` | `~/.config/memory-mcp/config.toml` | TOML config file for remote mapping and sibling-store topology; empty string disables config loading |
+| `--mcp-path` | `PALI_PATH` | `/mcp` | Streamable HTTP MCP path |
+| `--remote-url` | `PALI_REMOTE_URL` | unset | Git remote; omit for local-only mode |
+| `--branch` | `PALI_BRANCH` | `main` | Branch used for push and pull |
+| `--allowed-host` | `PALI_ALLOWED_HOST` | none | Additional accepted HTTP Host value; repeatable |
+| `--require-remote-sync` | `PALI_REQUIRE_REMOTE_SYNC` | `false` | Make remote sync health affect readiness |
+| `--recall-log-busy-timeout` | `PALI_RECALL_LOG_BUSY_TIMEOUT` | `5` | SQLite lock wait in seconds |
+| `--health-stale-secs` | `PALI_HEALTH_STALE_SECS` | `0` | Mark inactive subsystems stale; 0 disables |
 
 ## Sessions and embedding work
 
 | Flag | Environment variable | Default | Purpose |
 |---|---|---|---|
-| `--max-sessions` | `MEMORY_MCP_MAX_SESSIONS` | `100` | Maximum concurrent MCP sessions |
-| `--session-rate-limit` | `MEMORY_MCP_SESSION_RATE_LIMIT` | `10` | New sessions per rate window; 0 disables |
-| `--session-rate-window-secs` | `MEMORY_MCP_SESSION_RATE_WINDOW_SECS` | `60` | Session rate-limit window |
-| `--idle-timeout-secs` | `MEMORY_MCP_IDLE_TIMEOUT_SECS` | `14400` | Session idle timeout; 0 disables |
-| `--max-session-lifetime-secs` | `MEMORY_MCP_MAX_SESSION_LIFETIME_SECS` | `0` | Absolute session lifetime; 0 disables |
-| `--embed-timeout-secs` | `MEMORY_MCP_EMBED_TIMEOUT_SECS` | `30` | Maximum time for one embedding call |
-| `--embed-queue-size` | `MEMORY_MCP_EMBED_QUEUE_SIZE` | `64` | Bounded embedding-worker queue |
+| `--max-sessions` | `PALI_MAX_SESSIONS` | `100` | Maximum concurrent MCP sessions |
+| `--session-rate-limit` | `PALI_SESSION_RATE_LIMIT` | `10` | New sessions per rate window; 0 disables |
+| `--session-rate-window-secs` | `PALI_SESSION_RATE_WINDOW_SECS` | `60` | Session rate-limit window |
+| `--idle-timeout-secs` | `PALI_IDLE_TIMEOUT_SECS` | `14400` | Session idle timeout; 0 disables |
+| `--max-session-lifetime-secs` | `PALI_MAX_SESSION_LIFETIME_SECS` | `0` | Absolute session lifetime; 0 disables |
+| `--embed-timeout-secs` | `PALI_EMBED_TIMEOUT_SECS` | `30` | Maximum time for one embedding call |
+| `--embed-queue-size` | `PALI_EMBED_QUEUE_SIZE` | `64` | Bounded embedding-worker queue |
 
 Builds with the `otlp` feature also expose `--otlp-required` and
-`--otlp-optional` (and matching `MEMORY_MCP_*` variables) to select strict or
+`--otlp-optional` (and matching `PALI_*` variables) to select strict or
 best-effort OTLP span export.
 
 ## Authentication
@@ -54,7 +61,7 @@ pali auth login --store stdout
 
 Builds with the `k8s` feature also support `--store k8s-secret`.
 
-At runtime, token resolution checks `MEMORY_MCP_GITHUB_TOKEN`, then the token
+At runtime, token resolution checks `PALI_GITHUB_TOKEN`, then the token
 file, then the system keyring. Tokens are never accepted as CLI arguments.
 
 This authentication config is for outbound Git synchronization. Federated

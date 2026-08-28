@@ -516,10 +516,10 @@ fn auth_resolution_never_logs_token_value() {
     let token_value = "ghp_super_secret_test_token_12345";
     let (_, store) = with_capturing(|| {
         // Set env var with a "secret" token and attempt resolution.
-        std::env::set_var("MEMORY_MCP_GITHUB_TOKEN", token_value);
+        std::env::set_var("PALI_GITHUB_TOKEN", token_value);
         let provider = AuthProvider::new();
         let _ = provider.resolve_token();
-        std::env::remove_var("MEMORY_MCP_GITHUB_TOKEN");
+        std::env::remove_var("PALI_GITHUB_TOKEN");
     });
     let store = store.lock().unwrap();
 
