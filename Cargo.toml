@@ -52,7 +52,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 async-trait = "0.1"
 # Deterministic FactId content digests for chunk-addressable retrieval
 # (ADR-0042). Already in the tree transitively; this makes it direct.
-sha2 = "0.10"
+sha2 = "0.11"
 dirs = "6"
 mcp-session = "0.2"
 http = "1"
