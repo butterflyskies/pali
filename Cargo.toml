@@ -53,7 +53,7 @@ async-trait = "0.1"
 # Deterministic FactId content digests for chunk-addressable retrieval
 # (ADR-0042). Already in the tree transitively; this makes it direct.
 sha2 = "0.10"
-dirs = "6"
+dirs = "7"
 mcp-session = "0.2"
 http = "1"
 arc-swap = "1"
