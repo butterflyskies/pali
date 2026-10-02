@@ -85,7 +85,7 @@ secrecy = "0.10.3"
 opentelemetry = { version = "0.32", optional = true }
 opentelemetry_sdk = { version = "0.32", optional = true }
 opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic"], optional = true }
-tracing-opentelemetry = { version = "0.33", optional = true }
+tracing-opentelemetry = { version = "0.34", optional = true }
 
 # Vendor native C libraries so the binary statically links its own copies
 # rather than depending on whatever versions the host OS provides at runtime.
