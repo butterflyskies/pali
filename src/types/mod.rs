@@ -17,7 +17,8 @@ pub use args::{
     RememberArgs, SyncArgs, Verdict, VerdictEntry,
 };
 
-pub(crate) use args::{ListToolArgs, ReadToolArgs, LIST_MAX_LIMIT};
+pub(crate) use args::{ListToolArgs, ListToolField, ReadToolArgs, RecallToolArgs, LIST_MAX_LIMIT};
+pub(crate) use scope::scope_path_matches;
 
 pub use chunk::{ChunkerVersion, FactId, SourceSpan};
 

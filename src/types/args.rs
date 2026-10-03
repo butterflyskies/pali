@@ -10,6 +10,15 @@ use crate::{
 
 pub(crate) const LIST_MAX_LIMIT: usize = 100;
 
+/// Deserialize an optional tag array, reading an explicit `null` like an
+/// omitted key (no filter), as the sibling `Option` arguments already do.
+fn null_as_empty<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<Vec<String>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 // ---------------------------------------------------------------------------
 // Tool argument structs
 // ---------------------------------------------------------------------------
@@ -33,6 +42,10 @@ pub struct RememberArgs {
 }
 
 /// Arguments for the `recall` tool — semantic search.
+///
+/// Legacy public Rust DTO. The MCP handler deserializes the crate-private
+/// `RecallToolArgs` so additive JSON inputs (such as tag filters) do not break
+/// downstream code that constructs this struct literally.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct RecallArgs {
     /// Natural-language query to search for.
@@ -43,6 +56,27 @@ pub struct RecallArgs {
     /// Maximum number of results to return. Defaults to 5.
     #[serde(default)]
     pub limit: Option<usize>,
+}
+
+/// Wire arguments for the `recall` MCP tool.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub(crate) struct RecallToolArgs {
+    /// Natural-language query to search for.
+    pub query: String,
+    /// Scope: 'global', a bare namespace path like 'my-project' or 'org/team', 'all', or omit for global-only. Use the basename of your cwd (or its path) to search your current namespace + global memories. Use 'all' to search across every scope.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// Maximum number of results to return. Defaults to 5.
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// Only rank memories carrying every one of these tags. Matching is exact and
+    /// case-sensitive; an empty or omitted array applies no filter. Applied before ranking.
+    #[serde(default, deserialize_with = "null_as_empty")]
+    pub tags_all: Vec<String>,
+    /// Only rank memories carrying at least one of these tags. Matching is exact and
+    /// case-sensitive; an empty or omitted array applies no filter. Applied before ranking.
+    #[serde(default, deserialize_with = "null_as_empty")]
+    pub tags_any: Vec<String>,
 }
 
 /// Arguments for the `forget` tool — delete a memory.
@@ -87,6 +121,11 @@ pub struct MoveArgs {
 }
 
 /// A summary field that can be returned by the `list` tool.
+///
+/// Legacy public mirror of the original six projection fields. The MCP
+/// handler deserializes the crate-private `ListToolField`, which can grow new
+/// opt-in fields (such as `content`) without adding a variant to this
+/// exhaustive public enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[schemars(inline)]
@@ -105,9 +144,35 @@ pub enum ListField {
     UpdatedAt,
 }
 
-impl ListField {
-    /// The compatibility projection used when callers omit `fields`.
-    pub(crate) const ALL: [Self; 6] = [
+/// Wire projection field for the `list` MCP tool.
+///
+/// Kept crate-private so opt-in fields can be added without breaking
+/// downstream exhaustive matches on the public [`ListField`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(inline)]
+pub(crate) enum ListToolField {
+    /// Stable memory UUID.
+    Id,
+    /// Human-readable memory name.
+    Name,
+    /// Fully-qualified memory scope.
+    Scope,
+    /// Free-form memory tags.
+    Tags,
+    /// Memory creation timestamp.
+    CreatedAt,
+    /// Most recent memory update timestamp.
+    UpdatedAt,
+    /// Full memory body (opt-in; never part of the default projection).
+    Content,
+}
+
+impl ListToolField {
+    /// The compatibility projection used when callers omit `fields`. Opt-in
+    /// fields such as `content` are deliberately absent, so this is not every
+    /// variant.
+    pub(crate) const DEFAULT: [Self; 6] = [
         Self::Id,
         Self::Name,
         Self::Scope,
@@ -143,12 +208,21 @@ pub(crate) struct ListToolArgs {
     #[serde(default)]
     #[schemars(range(min = 1, max = LIST_MAX_LIMIT))]
     pub limit: Option<usize>,
-    /// Opaque cursor returned by a previous list page. Cursors are bound to the queried scope.
+    /// Opaque cursor returned by a previous list page. Cursors are bound to the queried scope and tag filter.
     #[serde(default)]
     pub cursor: Option<String>,
     /// Summary fields to return. Omit to preserve the full six-field legacy summary.
+    /// `content` (the full memory body) is opt-in and counts toward the page byte cap.
     #[serde(default)]
-    pub fields: Option<Vec<ListField>>,
+    pub fields: Option<Vec<ListToolField>>,
+    /// Only list memories carrying every one of these tags. Matching is exact and
+    /// case-sensitive; an empty or omitted array applies no filter. Applied before pagination.
+    #[serde(default, deserialize_with = "null_as_empty")]
+    pub tags_all: Vec<String>,
+    /// Only list memories carrying at least one of these tags. Matching is exact and
+    /// case-sensitive; an empty or omitted array applies no filter. Applied before pagination.
+    #[serde(default, deserialize_with = "null_as_empty")]
+    pub tags_any: Vec<String>,
 }
 
 /// Arguments for the `read` tool — retrieve a specific memory by name.
@@ -578,6 +652,104 @@ mod tests {
         assert_eq!(args.limit, None);
         assert_eq!(args.cursor, None);
         assert_eq!(args.fields, None);
+        assert!(args.tags_all.is_empty());
+        assert!(args.tags_any.is_empty());
+    }
+
+    #[test]
+    fn recall_tool_args_accepts_optional_tag_filters() {
+        let minimal: RecallToolArgs = serde_json::from_str(r#"{"query":"q"}"#).unwrap();
+        assert!(minimal.tags_all.is_empty());
+        assert!(minimal.tags_any.is_empty());
+
+        let full: RecallToolArgs =
+            serde_json::from_str(r#"{"query":"q","tags_all":["a"],"tags_any":["b","c"]}"#).unwrap();
+        assert_eq!(full.tags_all, ["a"]);
+        assert_eq!(full.tags_any, ["b", "c"]);
+
+        let schema = serde_json::to_value(schemars::schema_for!(RecallToolArgs)).unwrap();
+        for field in ["query", "scope", "limit", "tags_all", "tags_any"] {
+            assert!(
+                schema["properties"].get(field).is_some(),
+                "recall schema must expose '{field}'"
+            );
+        }
+    }
+
+    // Regression: a client that sends unset optional arguments as `null`
+    // got INVALID_PARAMS for the tag arrays but not for `scope` or `fields`.
+    #[test]
+    fn tag_filters_read_null_omitted_and_empty_as_no_filter() {
+        for tags in [
+            r#""#,
+            r#","tags_all":null,"tags_any":null"#,
+            r#","tags_all":[],"tags_any":[]"#,
+        ] {
+            let recall: RecallToolArgs =
+                serde_json::from_str(&format!(r#"{{"query":"q"{tags}}}"#)).unwrap();
+            assert!(
+                recall.tags_all.is_empty() && recall.tags_any.is_empty(),
+                "{tags}"
+            );
+            let list: ListToolArgs =
+                serde_json::from_str(&format!(r#"{{"limit":5{tags}}}"#)).unwrap();
+            assert!(
+                list.tags_all.is_empty() && list.tags_any.is_empty(),
+                "{tags}"
+            );
+        }
+
+        // The deserializer must still pass values through and reject
+        // non-array input rather than swallowing it as "no filter".
+        let tags = r#","tags_all":["a"],"tags_any":["b","c"]"#;
+        let recall: RecallToolArgs =
+            serde_json::from_str(&format!(r#"{{"query":"q"{tags}}}"#)).unwrap();
+        assert_eq!(
+            (recall.tags_all, recall.tags_any),
+            (
+                vec!["a".to_string()],
+                vec!["b".to_string(), "c".to_string()]
+            )
+        );
+        let list: ListToolArgs = serde_json::from_str(&format!(r#"{{"limit":5{tags}}}"#)).unwrap();
+        assert_eq!(
+            (list.tags_all, list.tags_any),
+            (
+                vec!["a".to_string()],
+                vec!["b".to_string(), "c".to_string()]
+            )
+        );
+        for bad in [r#""tags_all":"a""#, r#""tags_any":[1]"#] {
+            assert!(
+                serde_json::from_str::<RecallToolArgs>(&format!(r#"{{"query":"q",{bad}}}"#))
+                    .is_err(),
+                "{bad}"
+            );
+            assert!(
+                serde_json::from_str::<ListToolArgs>(&format!(r#"{{{bad}}}"#)).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn list_tool_args_accepts_opt_in_content_field() {
+        let args: ListToolArgs = serde_json::from_str(r#"{"fields":["name","content"]}"#).unwrap();
+        assert_eq!(
+            args.fields,
+            Some(vec![ListToolField::Name, ListToolField::Content])
+        );
+        assert!(!ListToolField::DEFAULT.contains(&ListToolField::Content));
+    }
+
+    #[test]
+    fn list_tool_args_deserializes_tag_filters() {
+        let args: ListToolArgs = serde_json::from_str(
+            r#"{"tags_all":["lens:Safety"],"tags_any":["lang:any","lang:rust"]}"#,
+        )
+        .unwrap();
+        assert_eq!(args.tags_all, ["lens:Safety"]);
+        assert_eq!(args.tags_any, ["lang:any", "lang:rust"]);
     }
 
     #[test]
@@ -589,12 +761,15 @@ mod tests {
         assert_eq!(args.scope.as_deref(), Some("all"));
         assert_eq!(args.limit, Some(25));
         assert_eq!(args.cursor.as_deref(), Some("lc1_abc"));
-        assert_eq!(args.fields, Some(vec![ListField::Name, ListField::Scope]));
+        assert_eq!(
+            args.fields,
+            Some(vec![ListToolField::Name, ListToolField::Scope])
+        );
     }
 
     #[test]
     fn list_tool_args_rejects_unknown_field_variant() {
-        let error = serde_json::from_str::<ListToolArgs>(r#"{"fields":["content"]}"#)
+        let error = serde_json::from_str::<ListToolArgs>(r#"{"fields":["embedding"]}"#)
             .expect_err("unknown projection field must fail");
         assert!(error.to_string().contains("unknown variant"));
     }
@@ -690,7 +865,7 @@ mod tests {
         let root = serde_json::to_value(&schema).unwrap();
         let props = root["properties"].as_object().unwrap();
 
-        for field in ["scope", "limit", "cursor", "fields"] {
+        for field in ["scope", "limit", "cursor", "fields", "tags_all", "tags_any"] {
             assert!(
                 props.contains_key(field),
                 "list schema must expose '{field}'"
@@ -706,7 +881,15 @@ mod tests {
             !serialized.contains("$ref"),
             "fields schema must be inline for MCP clients: {serialized}"
         );
-        for field in ["id", "name", "scope", "tags", "created_at", "updated_at"] {
+        for field in [
+            "id",
+            "name",
+            "scope",
+            "tags",
+            "created_at",
+            "updated_at",
+            "content",
+        ] {
             assert!(
                 serialized.contains(&format!("\"{field}\"")),
                 "fields schema must advertise '{field}': {serialized}"

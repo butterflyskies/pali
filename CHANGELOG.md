@@ -1,5 +1,22 @@
 ## [Unreleased]
 
+### Added
+
+- **Tag filters on `list` and `recall`** (#148): optional `tags_all` (every
+  tag must be present) and `tags_any` (at least one must be present). Matching
+  is exact and case-sensitive; an empty or omitted array applies no filter.
+  `list` applies the filter before pagination, so `count`, `has_more`, and
+  cursors describe the filtered set, and a cursor is rejected under a
+  different tag filter (cursors issued without tag filters remain valid).
+  `recall` applies it as a pre-filter on both semantic and BM25 candidates
+  before ranking is cut to `limit`.
+- **`VectorStore::search_bound`**: the smallest search `limit` that ranks
+  every raw entry a scope filter can reach, including entries the store drops
+  before returning. Tag-filtered recall widens its window up to this bound.
+- **Opt-in `content` field for `list`**: `fields: ["content"]` returns each
+  memory's full body. The 24 KiB page cap still applies; oversized pages split
+  across `next_cursor` instead of truncating bodies.
+
 ## [0.19.0] - 2026-08-27
 
 ### Behavior changes — read before upgrading

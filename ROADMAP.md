@@ -28,7 +28,7 @@ The highest-priority epic. Pali#262 (HyperMem bridge — graph-aware chunk index
 | #141 | Upgrade to ModernBERT Embed (8192 token context) | Open |
 | #140 | Chunk long memories for embedding | Open |
 | #55 | BM25 keyword search via Tantivy | Completed in #308 |
-| #148 | Tag-based filtering in recall | Open |
+| #148 | Tag-based filtering in recall (and list) | Completed in #370 |
 | #197 | Threshold-based recall: auto-expand until relevance drops | Open |
 | #129 | Memory consolidation, write discipline, quality metrics | Open |
 | #147 | Deduplication / update detection on remember | Open |

@@ -64,6 +64,13 @@ pub trait VectorStore: Send + Sync + sealed::Sealed {
         limit: usize,
     ) -> Result<Vec<(u64, String, f32)>, MemoryError>;
 
+    /// A `limit` at which [`Self::search`] is guaranteed to rank every entry
+    /// `filter` can reach, including raw entries it drops before returning
+    /// (such as keys that no longer map to a memory). The bound is
+    /// conservative, not the smallest sufficient limit. Below it, a pass may
+    /// hide candidates even when it returns fewer than `limit`.
+    fn search_bound(&self, filter: &ScopeFilter) -> usize;
+
     /// Look up the vector key for a qualified name in the all-index.
     ///
     /// Returns `None` if the name is not indexed.

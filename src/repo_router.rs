@@ -13,7 +13,9 @@ use crate::{
     error::MemoryError,
     health::SubsystemReporter,
     repo::MemoryRepo,
-    types::{ChangedMemories, Memory, MemoryName, PullResult, ResolvedChanges, Scope},
+    types::{
+        scope_path_matches, ChangedMemories, Memory, MemoryName, PullResult, ResolvedChanges, Scope,
+    },
 };
 
 /// A scope-to-repo entry in the router.
@@ -25,6 +27,18 @@ struct ScopeRoute {
     repo: Arc<MemoryRepo>,
     /// Branch name for push/pull (overrides the server-wide default).
     branch: Option<String>,
+}
+
+/// How a scope listing treats a scope-specific repo that cannot be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScopeListing {
+    /// Skip the repo (logged and reported to git health). `list` pages are
+    /// a best-effort view and keep serving the readable repos.
+    Lenient,
+    /// Fail the whole listing. Recall's tag allow-list is the complete set
+    /// of rankable candidates, so a silently partial listing would drop the
+    /// missing repo's matches with no signal to the caller.
+    Strict,
 }
 
 /// Routes memory operations to scope-specific git repositories.
@@ -220,10 +234,7 @@ impl RepoRouter {
             Scope::Path(sp) => {
                 let path = sp.as_str();
                 for route in &self.routes {
-                    if path == route.prefix
-                        || (path.starts_with(&route.prefix)
-                            && path.as_bytes().get(route.prefix.len()) == Some(&b'/'))
-                    {
+                    if scope_path_matches(path, &route.prefix) {
                         return &route.repo;
                     }
                 }
@@ -240,10 +251,7 @@ impl RepoRouter {
             Scope::Path(sp) => {
                 let path = sp.as_str();
                 for route in &self.routes {
-                    if path == route.prefix
-                        || (path.starts_with(&route.prefix)
-                            && path.as_bytes().get(route.prefix.len()) == Some(&b'/'))
-                    {
+                    if scope_path_matches(path, &route.prefix) {
                         return route
                             .branch
                             .as_deref()
@@ -352,6 +360,24 @@ impl RepoRouter {
         Arc::ptr_eq(self.repo_for_scope(scope), repo)
     }
 
+    /// Whether `route` can own any memory a listing of `scope` returns:
+    /// every route for an unscoped listing and none for the root scope
+    /// (always the default repo). For a path, the route that owns the path
+    /// itself (under the same longest-prefix rule as point reads, so an
+    /// ancestor route shadowed by a nested one is excluded), or a route
+    /// nested strictly below the path.
+    fn route_may_own_within(&self, route: &ScopeRoute, scope: Option<&Scope>) -> bool {
+        match scope {
+            None => true,
+            Some(Scope::Root) => false,
+            Some(scope @ Scope::Path(path)) => {
+                self.owns_scope(&route.repo, scope)
+                    || (route.prefix != path.as_str()
+                        && scope_path_matches(&route.prefix, path.as_str()))
+            }
+        }
+    }
+
     /// List memories across all repos, filtered by scope.
     ///
     /// Each repo's results are filtered to the scopes that repo owns under
@@ -409,15 +435,49 @@ impl RepoRouter {
     /// does not own its scope is unreachable through point reads, so derived
     /// indexes must not serve it either.
     pub async fn list_memories_strict(&self) -> Result<Vec<Memory>, MemoryError> {
-        let mut all_memories = self.default_repo.list_memories(None).await?;
+        self.list_memories_strict_in(None).await
+    }
+
+    /// List `scope` with the given treatment of an unreadable route repo:
+    /// [`Self::list_memories`] for [`ScopeListing::Lenient`],
+    /// [`Self::list_memories_strict_in`] for [`ScopeListing::Strict`].
+    pub(crate) async fn list_memories_as(
+        &self,
+        scope: Option<&Scope>,
+        listing: ScopeListing,
+    ) -> Result<Vec<Memory>, MemoryError> {
+        match listing {
+            ScopeListing::Lenient => self.list_memories(scope).await,
+            ScopeListing::Strict => self.list_memories_strict_in(scope).await,
+        }
+    }
+
+    /// [`Self::list_memories_strict`] narrowed to `scope` with the same
+    /// ownership filtering as [`Self::list_memories`]. Callers that treat the
+    /// listing as the complete set of candidates (such as recall's tag
+    /// allow-list) must fail rather than silently drop an unreadable repo's
+    /// memories.
+    ///
+    /// Only route repos that can own a memory in `scope` are listed (see
+    /// [`Self::route_may_own_within`]), so a broken route fails the listings
+    /// it serves and no others.
+    pub(crate) async fn list_memories_strict_in(
+        &self,
+        scope: Option<&Scope>,
+    ) -> Result<Vec<Memory>, MemoryError> {
+        let mut all_memories = self.default_repo.list_memories(scope).await?;
         if !self.routes.is_empty() {
             all_memories.retain(|m| self.owns_scope(&self.default_repo, &m.metadata.scope));
         }
-        for route in &self.routes {
+        for route in self
+            .routes
+            .iter()
+            .filter(|route| self.route_may_own_within(route, scope))
+        {
             all_memories.extend(
                 route
                     .repo
-                    .list_memories(None)
+                    .list_memories(scope)
                     .await?
                     .into_iter()
                     .filter(|m| self.owns_scope(&route.repo, &m.metadata.scope)),
@@ -1528,5 +1588,128 @@ mod tests {
             health.git.load().healthy,
             "a fully clean aggregate must settle the reporter healthy"
         );
+    }
+
+    /// Plant a non-UTF-8 memory file under `dir` so any listing that reads
+    /// that directory fails.
+    fn plant_unreadable(dir: &std::path::Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("bad.md"), [0xff, 0xfe, 0xfd]).unwrap();
+    }
+
+    fn names_of(memories: &[Memory]) -> Vec<String> {
+        let mut names: Vec<_> = memories.iter().map(|m| m.name.to_string()).collect();
+        names.sort();
+        names
+    }
+
+    // Regression: recall's tag allow-list treats this listing as the complete
+    // candidate set, so a skipped route would silently drop its matches; and
+    // a broken route must not fail listings it cannot contribute to. The
+    // broken repo is damaged in every directory a listing could read, so the
+    // unrelated-scope assertions fail if routes are not filtered.
+    #[tokio::test]
+    async fn strict_scoped_list_fails_only_where_a_broken_route_serves() {
+        let default_dir = tempfile::tempdir().unwrap();
+        let broken_dir = tempfile::tempdir().unwrap();
+        let team_dir = tempfile::tempdir().unwrap();
+        let open =
+            |dir: &tempfile::TempDir| Arc::new(MemoryRepo::init_or_open(dir.path(), None).unwrap());
+        let default_repo = open(&default_dir);
+        let team_repo = open(&team_dir);
+        default_repo
+            .save_memory(&memory_at("", "root-note"))
+            .await
+            .unwrap();
+        default_repo
+            .save_memory(&memory_at("other", "other-note"))
+            .await
+            .unwrap();
+        team_repo
+            .save_memory(&memory_at("org/team", "team-note"))
+            .await
+            .unwrap();
+        plant_unreadable(&broken_dir.path().join("global"));
+        for scope in ["broken", "other", "org", "org/team"] {
+            plant_unreadable(&broken_dir.path().join("projects").join(scope));
+        }
+        let router = RepoRouter {
+            default_repo,
+            routes: vec![
+                ScopeRoute {
+                    prefix: "broken".to_string(),
+                    repo: open(&broken_dir),
+                    branch: None,
+                },
+                ScopeRoute {
+                    prefix: "org/team".to_string(),
+                    repo: team_repo,
+                    branch: None,
+                },
+            ],
+            sync_reporter: None,
+            git_reporter: None,
+        };
+        let path = |p: &str| Scope::Path(ScopePath::new(p).unwrap());
+
+        router
+            .list_memories(Some(&path("broken")))
+            .await
+            .expect("precondition: the lenient aggregate skips the route");
+        assert!(router.list_memories_strict_in(None).await.is_err());
+        assert!(router
+            .list_memories_strict_in(Some(&path("broken")))
+            .await
+            .is_err());
+        let root = router
+            .list_memories_strict_in(Some(&Scope::Root))
+            .await
+            .expect("no route owns root memories");
+        assert_eq!(names_of(&root), ["root-note"]);
+        let other = router
+            .list_memories_strict_in(Some(&path("other")))
+            .await
+            .expect("the broken route cannot serve an unrelated namespace");
+        assert_eq!(names_of(&other), ["other-note"]);
+        let org = router
+            .list_memories_strict_in(Some(&path("org")))
+            .await
+            .expect("a nested healthy route serves its ancestor's listing");
+        assert_eq!(names_of(&org), ["team-note"]);
+    }
+
+    #[test]
+    fn route_may_own_within_follows_ownership_and_nesting() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = || Arc::new(MemoryRepo::init_or_open(dir.path(), None).unwrap());
+        let route = |prefix: &str| ScopeRoute {
+            prefix: prefix.to_string(),
+            repo: repo(),
+            branch: None,
+        };
+        let router = RepoRouter {
+            default_repo: repo(),
+            routes: vec![route("work/team"), route("work")],
+            sync_reporter: None,
+            git_reporter: None,
+        };
+        let (team, work) = (&router.routes[0], &router.routes[1]);
+        let path = |p: &str| Scope::Path(ScopePath::new(p).unwrap());
+        let may = |route, scope: &str| router.route_may_own_within(route, Some(&path(scope)));
+
+        assert!(router.route_may_own_within(work, None));
+        assert!(!router.route_may_own_within(work, Some(&Scope::Root)));
+        for (scope, team_serves, work_serves) in [
+            ("work/team", true, false), // the nested route shadows `work`
+            ("work/team/sub", true, false),
+            ("work", true, true), // `work/team` is nested below it
+            ("work/other", false, true),
+            ("work/teammate", false, true),
+            ("workflow", false, false),
+            ("other", false, false),
+        ] {
+            assert_eq!(may(team, scope), team_serves, "work/team for {scope}");
+            assert_eq!(may(work, scope), work_serves, "work for {scope}");
+        }
     }
 }

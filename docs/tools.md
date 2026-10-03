@@ -13,7 +13,7 @@ fit together.
 | `edit` | Replace content or tags while preserving omitted fields. |
 | `move` | Atomically move a memory to another scope, optionally renaming it. |
 | `forget` | Delete a memory from git and the search indexes. |
-| `list` | List memory summaries without full content. |
+| `list` | List memory summaries, optionally filtered by tags; full content is opt-in. |
 
 Memory names may contain up to three path components. Names and scopes are
 validated before they become filesystem paths.
@@ -22,21 +22,54 @@ validated before they become filesystem paths.
 
 `list` returns a bounded page of summaries sorted by scope and name. `limit`
 defaults to 50 and accepts values from 1 through 100. When `has_more` is true,
-pass the opaque `next_cursor` into the next request with the same scope. The
+pass the opaque `next_cursor` into the next request with the same scope and tag
+filters; a cursor is rejected under any other scope or tag filter. The
 response distinguishes `count` (all matching memories) from `returned` (this
 page). Cursors use keyset semantics, so concurrent inserts or deletes can change
 later pages without invalidating the cursor.
 
 Use `fields` to request an exact summary projection. Omitting it returns `id`,
-`name`, `scope`, `tags`, `created_at`, and `updated_at`. Each successful page is
-capped at 24 KiB; request fewer fields if a summary is too large.
+`name`, `scope`, `tags`, `created_at`, and `updated_at`. Add `content` to
+`fields` to receive each memory's full body; it is never part of the default
+projection. Each successful page is capped at 24 KiB. A page that would exceed
+the cap returns fewer memories with `has_more` and `next_cursor` (bodies are
+never truncated); a single summary too large for any page is rejected, so
+request fewer fields — for example, omit `content` and `read` that memory.
+
+Use `tags_all` and `tags_any` to filter before pagination:
+
+- `tags_all`: keep memories carrying **every** listed tag;
+- `tags_any`: keep memories carrying **at least one** listed tag;
+- both together: a memory must satisfy both.
+
+Tag matching is exact and case-sensitive (`lens:Safety` does not match
+`lens:safety` or `lens:Safe`). An empty or omitted array applies no filter.
+`count` reports the memories that pass the scope and tag filters.
+
+For example, to load one tagged slice with bodies in a single call:
+
+```json
+{"scope": "codecraft", "tags_all": ["lens:Safety"],
+ "tags_any": ["lang:any", "lang:rust"], "fields": ["name", "content"],
+ "limit": 100}
+```
 
 ## Retrieval
 
 ### `recall`
 
-`recall` accepts a natural-language `query`, an optional `scope`, and an
-optional `limit` (default 5).
+`recall` accepts a natural-language `query`, an optional `scope`, an
+optional `limit` (default 5), and optional `tags_all` / `tags_any` tag filters.
+
+The tag filters have the same exact, case-sensitive semantics as `list`, and an
+empty or omitted array applies no filter. They are a pre-filter: both retrieval
+strategies drop non-matching candidates before ranking is cut to `limit`, so a
+highly ranked memory without the required tags never displaces a matching one.
+Tags are not themselves searched — the filter restricts candidates; the query
+still ranks them. The filter is resolved against every repository that serves the
+scope, so if listing one of them fails a tag-filtered `recall` fails rather
+than silently omitting that repository's matches. Repositories that cannot
+hold memories in the scope are not consulted.
 
 It runs two independent retrieval strategies:
 

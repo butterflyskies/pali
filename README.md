@@ -102,6 +102,10 @@ ranked lists with reciprocal rank fusion. Results say whether they matched via
 `semantic`, `lexical`, or `both`. Exact phrases receive lexical precedence even
 when they are buried in long memories.
 
+`recall` and `list` both accept `tags_all` and `tags_any` filters (exact,
+case-sensitive tag matches) that apply before ranking or pagination, and `list`
+can return full bodies with `fields: ["content"]`.
+
 Scopes are hierarchical namespaces such as `my-project` or
 `org/team/project`. Querying a scope includes that namespace, its descendants,
 and global memories. Omitting a scope searches global memories only; passing

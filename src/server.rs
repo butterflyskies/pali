@@ -1,4 +1,4 @@
-use std::{borrow::Cow, sync::Arc, time::Instant};
+use std::{borrow::Cow, collections::BTreeSet, sync::Arc, time::Instant};
 
 /// Maximum number of characters included in recall result snippets.
 /// Content longer than this is truncated and flagged with `truncated: true`.
@@ -19,6 +19,7 @@ use rmcp::{
     tool, tool_handler, tool_router, RoleServer, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tracing::{info, warn, Instrument};
 
 /// Extract the `Mcp-Session-Id` header from HTTP request parts.
@@ -47,15 +48,15 @@ use crate::{
     index::VectorStore,
     recall_log::{BatchVerdict, RecallLog, RecallResult},
     repo::{traced_spawn_blocking, MemoryRepo},
-    repo_router::MultiSyncResult,
+    repo_router::{MultiSyncResult, RepoRouter, ScopeListing},
     search::{
-        bm25::DegradeOnDrop, hybrid_search, spawn_lexical_repair_for_router, FusedHit, LexicalDoc,
-        LexicalIndex, LexicalOp,
+        bm25::DegradeOnDrop, hybrid_search_within, spawn_lexical_repair_for_router,
+        CandidateAllowList, FusedHit, LexicalDoc, LexicalIndex, LexicalOp,
     },
     types::{
-        parse_qualified_name, AppState, BatchMarkAppliedArgs, EditArgs, ForgetArgs, ListField,
-        ListToolArgs, MarkAppliedArgs, Memory, MemoryMetadata, MemoryName, MemoryRef, MoveArgs,
-        PullResult, ReadToolArgs, RecallArgs, RecallStatsArgs, ReindexStats, RememberArgs,
+        parse_qualified_name, AppState, BatchMarkAppliedArgs, EditArgs, ForgetArgs, ListToolArgs,
+        ListToolField, MarkAppliedArgs, Memory, MemoryMetadata, MemoryName, MemoryRef, MoveArgs,
+        PullResult, ReadToolArgs, RecallStatsArgs, RecallToolArgs, ReindexStats, RememberArgs,
         ResolvedChanges, Scope, ScopeFilter, SyncArgs, LIST_MAX_LIMIT,
     },
 };
@@ -165,11 +166,68 @@ fn validate_list_limit(limit: Option<usize>) -> Result<usize, MemoryError> {
     Ok(limit)
 }
 
-fn list_filter_key(filter: &ScopeFilter) -> Cow<'static, str> {
-    match filter {
+/// Exact, case-sensitive tag predicate shared by `list` and `recall`.
+///
+/// `all` requires every listed tag to be present; `any` requires at least one.
+/// An empty set on either side imposes no constraint, so the default value
+/// matches every memory. The predicate is set-based, so both sides are
+/// ordered sets: `["a","b"]` and `["b","a","a"]` are the same filter and
+/// produce interchangeable list cursors.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TagFilter {
+    all: BTreeSet<String>,
+    any: BTreeSet<String>,
+}
+
+impl TagFilter {
+    fn new(all: Vec<String>, any: Vec<String>) -> Self {
+        Self {
+            all: all.into_iter().collect(),
+            any: any.into_iter().collect(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.all.is_empty() && self.any.is_empty()
+    }
+
+    /// Per-memory cost is bounded by the memory's own tag count `k`, never by
+    /// the filter size: `all` holds distinct tags, so an `all` larger than `k`
+    /// cannot match and is rejected up front, leaving at most `k` linear
+    /// probes; `any` probes the set once per memory tag.
+    fn matches(&self, tags: &[String]) -> bool {
+        if self.all.len() > tags.len() {
+            return false;
+        }
+        self.all.iter().all(|wanted| tags.contains(wanted))
+            && (self.any.is_empty() || tags.iter().any(|tag| self.any.contains(tag)))
+    }
+
+    /// Stable, bounded identity of this filter for cursor binding.
+    ///
+    /// Hashing keeps cursors within [`LIST_CURSOR_MAX_CHARS`] regardless of
+    /// how many or how long the caller's tags are.
+    fn cursor_key(&self) -> String {
+        let canonical = serde_json::json!([self.all, self.any]).to_string();
+        let digest = Sha256::digest(canonical.as_bytes());
+        format!("tags:{digest:x}")
+    }
+}
+
+/// Identity of a list query that a cursor is bound to.
+///
+/// An empty tag filter keeps the scope-only key so cursors issued before tag
+/// filtering existed stay valid.
+fn list_filter_key(filter: &ScopeFilter, tags: &TagFilter) -> Cow<'static, str> {
+    let scope_key = match filter {
         ScopeFilter::RootOnly => Cow::Borrowed("root"),
         ScopeFilter::All => Cow::Borrowed("all"),
         ScopeFilter::Subtree(path) => Cow::Owned(format!("subtree:{}", path.as_str())),
+    };
+    if tags.is_empty() {
+        scope_key
+    } else {
+        Cow::Owned(format!("{scope_key};{}", tags.cursor_key()))
     }
 }
 
@@ -219,7 +277,7 @@ fn decode_list_cursor(
     }
     if payload.filter != expected_filter {
         return Err(invalid_list_input(
-            "list cursor belongs to a different scope query; omit cursor to start a new page",
+            "list cursor belongs to a different scope or tag filter; omit cursor to start a new page",
         ));
     }
     Ok(DecodedListCursor {
@@ -230,40 +288,92 @@ fn decode_list_cursor(
     })
 }
 
-fn list_summary(memory: &Memory, fields: &[ListField]) -> serde_json::Value {
+fn list_summary(memory: &Memory, fields: &[ListToolField]) -> serde_json::Value {
     let mut summary = serde_json::Map::new();
     for field in fields {
         match field {
-            ListField::Id => {
+            ListToolField::Id => {
                 summary.insert("id".to_string(), serde_json::json!(memory.id));
             }
-            ListField::Name => {
+            ListToolField::Name => {
                 summary.insert("name".to_string(), serde_json::json!(memory.name));
             }
-            ListField::Scope => {
+            ListToolField::Scope => {
                 summary.insert(
                     "scope".to_string(),
                     serde_json::json!(memory.metadata.scope.to_string()),
                 );
             }
-            ListField::Tags => {
+            ListToolField::Tags => {
                 summary.insert("tags".to_string(), serde_json::json!(memory.metadata.tags));
             }
-            ListField::CreatedAt => {
+            ListToolField::CreatedAt => {
                 summary.insert(
                     "created_at".to_string(),
                     serde_json::json!(memory.metadata.created_at),
                 );
             }
-            ListField::UpdatedAt => {
+            ListToolField::UpdatedAt => {
                 summary.insert(
                     "updated_at".to_string(),
                     serde_json::json!(memory.metadata.updated_at),
                 );
             }
+            ListToolField::Content => {
+                summary.insert("content".to_string(), serde_json::json!(memory.content));
+            }
         }
     }
     serde_json::Value::Object(summary)
+}
+
+/// Load every memory a scope filter selects, with the same subtree semantics
+/// as recall: `Subtree(path)` yields root memories plus that path's subtree.
+async fn list_scope_memories(
+    router: &RepoRouter,
+    filter: &ScopeFilter,
+    listing: ScopeListing,
+) -> Result<Vec<Memory>, MemoryError> {
+    match filter {
+        ScopeFilter::RootOnly => router.list_memories_as(Some(&Scope::Root), listing).await,
+        ScopeFilter::All => router.list_memories_as(None, listing).await,
+        ScopeFilter::Subtree(path) => {
+            let mut memories = router.list_memories_as(Some(&Scope::Root), listing).await?;
+            memories.extend(
+                router
+                    .list_memories_as(Some(&Scope::Path(path.clone())), listing)
+                    .await?,
+            );
+            Ok(memories)
+        }
+    }
+}
+
+/// Resolve a tag filter to the recall candidates it admits within a scope.
+///
+/// Returns `None` when the filter is empty (no pre-filter). The initial
+/// ranking window is the number of in-scope memories plus `limit`, so one
+/// pass normally ranks every in-scope candidate; the search layer widens
+/// the window when an index holds more entries than git (for example
+/// entries that outlived their memory). A strategy stops after one pass
+/// once it holds `limit` allowed hits or every allowed name.
+async fn recall_allow_list(
+    router: &RepoRouter,
+    filter: &ScopeFilter,
+    tags: &TagFilter,
+    limit: usize,
+) -> Result<Option<CandidateAllowList>, MemoryError> {
+    if tags.is_empty() {
+        return Ok(None);
+    }
+    let memories = list_scope_memories(router, filter, ScopeListing::Strict).await?;
+    let fetch = memories.len().saturating_add(limit);
+    let names = memories
+        .iter()
+        .filter(|memory| tags.matches(&memory.metadata.tags))
+        .map(|memory| memory.mem_ref().qualified_path())
+        .collect();
+    Ok(Some(CandidateAllowList::new(names, fetch)))
 }
 
 fn list_page_value(
@@ -282,20 +392,33 @@ fn list_page_value(
     })
 }
 
+/// One serialized `list` page plus the totals the handler traces.
+#[derive(Debug)]
+struct ListPage {
+    /// The JSON response body.
+    json: String,
+    /// Memories passing the scope and tag filters (the response `count`).
+    count: usize,
+    /// Summaries on this page (the response `returned`).
+    returned: usize,
+}
+
 fn paginate_list(
     memories: Vec<Memory>,
     filter: &ScopeFilter,
+    tags: &TagFilter,
     limit: usize,
     after: Option<DecodedListCursor>,
-    fields: &[ListField],
-) -> Result<String, MemoryError> {
+    fields: &[ListToolField],
+) -> Result<ListPage, MemoryError> {
     let mut memories: Vec<_> = memories
         .into_iter()
+        .filter(|memory| tags.matches(&memory.metadata.tags))
         .map(|memory| (ListSortKey::from_memory(&memory), memory))
         .collect();
     memories.sort_by(|(left, _), (right, _)| left.cmp(right));
     let count = memories.len();
-    let filter_key = list_filter_key(filter);
+    let filter_key = list_filter_key(filter, tags);
     let start = after.as_ref().map_or(0, |cursor| {
         memories.partition_point(|(key, _)| key <= &cursor.key)
     });
@@ -327,8 +450,13 @@ fn paginate_list(
         if candidate.len() > LIST_PAGE_MAX_BYTES {
             summaries.pop();
             if summaries.is_empty() {
+                let hint = if fields.contains(&ListToolField::Content) {
+                    " (omit content and read the memory instead)"
+                } else {
+                    ""
+                };
                 return Err(invalid_list_input(format!(
-                    "one list summary exceeds the {LIST_PAGE_MAX_BYTES}-byte page ceiling; request fewer fields"
+                    "one list summary exceeds the {LIST_PAGE_MAX_BYTES}-byte page ceiling; request fewer fields{hint}"
                 )));
             }
             break;
@@ -346,7 +474,11 @@ fn paginate_list(
             "list page exceeded its serialized byte ceiling".to_string(),
         ));
     }
-    Ok(page)
+    Ok(ListPage {
+        json: page,
+        count,
+        returned: summaries.len(),
+    })
 }
 
 const SERVER_PROCESSING_DURATION_META_KEY: &str = "memory-mcp/serverProcessingDurationMs";
@@ -1388,11 +1520,15 @@ impl MemoryServer {
         (cosine distance, lower is more similar; always numeric — lexical-only hits, which have no \
         embedding distance, carry the sentinel -1.0).\n\n\
         Scope: pass '<basename-of-your-cwd>' or 'org/team' to search that scope + global memories, \
-        'global' for global-only, or 'all' to search everything. Omitting scope defaults to global-only."
+        'global' for global-only, or 'all' to search everything. Omitting scope defaults to global-only.\n\n\
+        Tags: tags_all restricts candidates to memories carrying every listed tag and tags_any to memories \
+        carrying at least one. Both are exact, case-sensitive pre-filters applied to semantic and keyword \
+        candidates before ranking and limit, so non-matching memories never displace matching ones. \
+        An empty array applies no filter."
     )]
     async fn recall(
         &self,
-        Parameters(args): Parameters<RecallArgs>,
+        Parameters(args): Parameters<RecallToolArgs>,
         Extension(parts): Extension<http::request::Parts>,
     ) -> Result<String, ErrorData> {
         let session_id = extract_session_id(&parts);
@@ -1404,6 +1540,8 @@ impl MemoryServer {
             recall_id = %recall_id,
             scope = ?args.scope,
             limit = ?args.limit,
+            tags_all = args.tags_all.len(),
+            tags_any = args.tags_any.len(),
             count = tracing::field::Empty,
         );
         let state = Arc::clone(&self.state);
@@ -1413,6 +1551,7 @@ impl MemoryServer {
                 ScopeFilter::parse_or_default(args.scope.as_deref()).map_err(ErrorData::from)?;
 
             let limit = args.limit.unwrap_or(5).min(100);
+            let tag_filter = TagFilter::new(args.tags_all, args.tags_any);
 
             // Degraded lexical index self-heals on read: kick a background
             // rebuild from git truth (single-flight). This query — and every
@@ -1425,13 +1564,20 @@ impl MemoryServer {
             // are merged with reciprocal rank fusion so an exact keyword hit
             // can surface even when its embedding distance is poor.
             let start = Instant::now();
-            let fused = hybrid_search(
+            // Neither index stores tags, so a tag filter is resolved against
+            // git truth into an allow-list that both strategies apply before
+            // ranking is cut to `limit`.
+            let allowed = recall_allow_list(&state.router, &scope_filter, &tag_filter, limit)
+                .await
+                .map_err(ErrorData::from)?;
+            let fused = hybrid_search_within(
                 state.embedding.as_ref(),
                 state.index.as_ref(),
                 &state.lexical,
                 &scope_filter,
                 &args.query,
                 limit,
+                allowed.as_ref(),
             )
             .await
             .map_err(ErrorData::from)?;
@@ -1478,6 +1624,10 @@ impl MemoryServer {
                         continue;
                     }
                 };
+                // Tags may have been edited since the allow-list was built.
+                if !tag_filter.matches(&memory.metadata.tags) {
+                    continue;
+                }
 
                 let rank = results_vec.len();
 
@@ -1925,10 +2075,10 @@ impl MemoryServer {
         .await
     }
 
-    /// List stored memories, optionally filtered by scope.
+    /// List stored memories, optionally filtered by scope and tags.
     ///
     /// Returns a bounded JSON page of memory summaries. Full content bodies
-    /// are omitted for brevity.
+    /// are omitted unless the caller opts into the `content` field.
     #[tool(
         name = "list",
         description = "List stored memories. Pass a bare path like '<basename-of-your-cwd>' for that scope + global memories, \
@@ -1937,6 +2087,11 @@ impl MemoryServer {
         Continue with the opaque next_cursor returned by the previous page. Concurrent inserts and \
         deletes follow standard keyset semantics. Use fields to request an exact summary \
         projection; omitting fields returns id, name, scope, tags, created_at, and updated_at. \
+        The opt-in content field returns each full memory body; a page that would exceed the byte \
+        cap returns fewer memories with has_more and next_cursor rather than truncating a body. \
+        tags_all keeps only memories carrying every listed tag and tags_any keeps only memories \
+        carrying at least one; both are exact, case-sensitive matches applied before pagination, \
+        an empty array applies no filter, and cursors are bound to the scope and tag filter. \
         The response envelope reports count as the total matching memories and returned as the number \
         in this page, plus limit, has_more, and next_cursor. Successful pages are capped at 24 KiB; \
         request fewer fields if one summary is too large."
@@ -1951,54 +2106,49 @@ impl MemoryServer {
             "handler.list",
             session_id = %session_id,
             scope = ?args.scope,
+            tags_all = args.tags_all.len(),
+            tags_any = args.tags_any.len(),
+            content = args
+                .fields
+                .as_ref()
+                .is_some_and(|fields| fields.contains(&ListToolField::Content)),
+            scope_count = tracing::field::Empty,
             count = tracing::field::Empty,
+            returned = tracing::field::Empty,
+            page_bytes = tracing::field::Empty,
         );
         let state = Arc::clone(&self.state);
         async move {
             let limit = validate_list_limit(args.limit).map_err(ErrorData::from)?;
             let scope_filter =
                 ScopeFilter::parse_or_default(args.scope.as_deref()).map_err(ErrorData::from)?;
-            let filter_key = list_filter_key(&scope_filter);
+            let tag_filter = TagFilter::new(args.tags_all, args.tags_any);
+            let filter_key = list_filter_key(&scope_filter, &tag_filter);
             let cursor = args
                 .cursor
                 .as_deref()
                 .map(|cursor| decode_list_cursor(cursor, &filter_key))
                 .transpose()
                 .map_err(ErrorData::from)?;
-            let fields = args.fields.unwrap_or_else(|| ListField::ALL.to_vec());
+            let fields = args
+                .fields
+                .unwrap_or_else(|| ListToolField::DEFAULT.to_vec());
 
             let start = Instant::now();
-            let memories = match &scope_filter {
-                ScopeFilter::RootOnly => state
-                    .router
-                    .list_memories(Some(&Scope::Root))
-                    .await
-                    .map_err(ErrorData::from)?,
-                ScopeFilter::All => state
-                    .router
-                    .list_memories(None)
-                    .await
-                    .map_err(ErrorData::from)?,
-                ScopeFilter::Subtree(sp) => {
-                    let path_scope = Scope::Path(sp.clone());
-                    let mut root_memories = state
-                        .router
-                        .list_memories(Some(&Scope::Root))
-                        .await
-                        .map_err(ErrorData::from)?;
-                    let path_memories = state
-                        .router
-                        .list_memories(Some(&path_scope))
-                        .await
-                        .map_err(ErrorData::from)?;
-                    root_memories.extend(path_memories);
-                    root_memories
-                }
-            };
-            let count = memories.len();
-            tracing::Span::current().record("count", count);
-            info!(ms = start.elapsed().as_millis(), count, "listed memories");
-            paginate_list(memories, &scope_filter, limit, cursor, &fields).map_err(ErrorData::from)
+            let memories = list_scope_memories(&state.router, &scope_filter, ScopeListing::Lenient)
+                .await
+                .map_err(ErrorData::from)?;
+            // Recorded before paginating so a failed page still shows how
+            // large the listing was.
+            let span = tracing::Span::current();
+            span.record("scope_count", memories.len());
+            let page = paginate_list(memories, &scope_filter, &tag_filter, limit, cursor, &fields)
+                .map_err(ErrorData::from)?;
+            span.record("count", page.count);
+            span.record("returned", page.returned);
+            span.record("page_bytes", page.json.len());
+            info!(ms = start.elapsed().as_millis(), "listed memories");
+            Ok(page.json)
         }
         .instrument(span)
         .await
@@ -2785,16 +2935,7 @@ mod tests {
     }
 
     fn list_test_server(repo: Arc<MemoryRepo>) -> MemoryServer {
-        let state = Arc::new(AppState::new(
-            repo,
-            "main".to_string(),
-            Box::new(ListTestEmbedding),
-            Box::new(InMemoryStore::new(4)),
-            AuthProvider::new(),
-            HealthRegistry::new(),
-            None,
-        ));
-        MemoryServer::new(state)
+        test_server_with(repo, Box::new(ListTestEmbedding))
     }
 
     fn list_test_parts() -> http::request::Parts {
@@ -2834,6 +2975,8 @@ mod tests {
                     limit: Some(0),
                     cursor: None,
                     fields: None,
+                    tags_all: Vec::new(),
+                    tags_any: Vec::new(),
                 }),
                 Extension(list_test_parts()),
             )
@@ -2848,6 +2991,8 @@ mod tests {
                     limit: None,
                     cursor: Some("garbage".to_string()),
                     fields: None,
+                    tags_all: Vec::new(),
+                    tags_any: Vec::new(),
                 }),
                 Extension(list_test_parts()),
             )
@@ -2876,7 +3021,9 @@ mod tests {
                         scope: None,
                         limit: Some(1),
                         cursor,
-                        fields: Some(vec![ListField::Name]),
+                        fields: Some(vec![ListToolField::Name]),
+                        tags_all: Vec::new(),
+                        tags_any: Vec::new(),
                     }),
                     Extension(list_test_parts()),
                 )
@@ -2925,7 +3072,9 @@ mod tests {
                     scope: None,
                     limit: None,
                     cursor: None,
-                    fields: Some(vec![ListField::Name]),
+                    fields: Some(vec![ListToolField::Name]),
+                    tags_all: Vec::new(),
+                    tags_any: Vec::new(),
                 }),
                 Extension(list_test_parts()),
             )
@@ -2946,7 +3095,8 @@ mod tests {
             scope: "global".to_string(),
             name: "alpha".to_string(),
         };
-        let cursor = encode_list_cursor(&list_filter_key(&all), &key).expect("cursor");
+        let cursor = encode_list_cursor(&list_filter_key(&all, &TagFilter::default()), &key)
+            .expect("cursor");
 
         assert!(matches!(
             decode_list_cursor("not-a-cursor", "all"),
@@ -3207,16 +3357,27 @@ mod tests {
             crate::types::ScopePath::new(scope_path).expect("valid scope path"),
         );
 
-        let page = paginate_list(memories, &filter, 2, None, &[ListField::Name])
-            .expect("long interior key must remain pageable");
+        let page = paginate_list(
+            memories,
+            &filter,
+            &TagFilter::default(),
+            2,
+            None,
+            &[ListToolField::Name],
+        )
+        .expect("long interior key must remain pageable")
+        .json;
         let page: serde_json::Value = serde_json::from_str(&page).expect("JSON page");
         assert_eq!(page["returned"], 2);
         let cursor = page["next_cursor"].as_str().expect("next cursor");
         assert_eq!(
-            decode_list_cursor(cursor, list_filter_key(&filter).as_ref())
-                .expect("decode")
-                .key
-                .name,
+            decode_list_cursor(
+                cursor,
+                list_filter_key(&filter, &TagFilter::default()).as_ref()
+            )
+            .expect("decode")
+            .key
+            .name,
             long_name
         );
     }
@@ -3230,11 +3391,13 @@ mod tests {
         let first = paginate_list(
             original.clone(),
             &ScopeFilter::RootOnly,
+            &TagFilter::default(),
             1,
             None,
-            &[ListField::Name],
+            &[ListToolField::Name],
         )
-        .expect("first page");
+        .expect("first page")
+        .json;
         let first: serde_json::Value = serde_json::from_str(&first).expect("JSON page");
         let cursor = first["next_cursor"]
             .as_str()
@@ -3250,11 +3413,13 @@ mod tests {
         let page = paginate_list(
             changed,
             &ScopeFilter::RootOnly,
+            &TagFilter::default(),
             10,
             Some(decode_list_cursor(&cursor, "root").expect("cursor")),
-            &[ListField::Name],
+            &[ListToolField::Name],
         )
-        .expect("concurrent changes must not stale the cursor");
+        .expect("concurrent changes must not stale the cursor")
+        .json;
         let page: serde_json::Value = serde_json::from_str(&page).expect("JSON page");
         assert_eq!(
             page["memories"],
@@ -3271,11 +3436,13 @@ mod tests {
         let first = paginate_list(
             original.clone(),
             &ScopeFilter::RootOnly,
+            &TagFilter::default(),
             1,
             None,
-            &[ListField::Name],
+            &[ListToolField::Name],
         )
-        .expect("first page");
+        .expect("first page")
+        .json;
         let first: serde_json::Value = serde_json::from_str(&first).expect("JSON page");
         let cursor = first["next_cursor"].as_str().expect("cursor");
         let mut edited = original;
@@ -3284,11 +3451,13 @@ mod tests {
         let page = paginate_list(
             edited,
             &ScopeFilter::RootOnly,
+            &TagFilter::default(),
             10,
             Some(decode_list_cursor(cursor, "root").expect("cursor")),
-            &[ListField::Name, ListField::Tags],
+            &[ListToolField::Name, ListToolField::Tags],
         )
-        .expect("edit must not stale cursor");
+        .expect("edit must not stale cursor")
+        .json;
         let page: serde_json::Value = serde_json::from_str(&page).expect("JSON page");
         assert_eq!(
             page["memories"],
@@ -3305,7 +3474,7 @@ mod tests {
             list_test_memory("alpha", Scope::Root, vec![]),
             list_test_memory("charlie", list_test_path("team/a"), vec![]),
         ];
-        let fields = [ListField::Scope, ListField::Name];
+        let fields = [ListToolField::Scope, ListToolField::Name];
         let mut cursor = None;
         let mut walked = Vec::new();
 
@@ -3313,8 +3482,16 @@ mod tests {
             let decoded = cursor
                 .as_deref()
                 .map(|cursor| decode_list_cursor(cursor, "all").expect("cursor"));
-            let page = paginate_list(memories.clone(), &ScopeFilter::All, 2, decoded, &fields)
-                .expect("page");
+            let page = paginate_list(
+                memories.clone(),
+                &ScopeFilter::All,
+                &TagFilter::default(),
+                2,
+                decoded,
+                &fields,
+            )
+            .expect("page")
+            .json;
             let value: serde_json::Value = serde_json::from_str(&page).expect("JSON page");
             assert_eq!(value["count"], 5);
             assert!(page.len() <= LIST_PAGE_MAX_BYTES);
@@ -3346,10 +3523,10 @@ mod tests {
     #[test]
     fn list_projection_is_exact_and_omission_preserves_legacy_fields() {
         let memory = list_test_memory("alpha", Scope::Root, vec!["tag".to_string()]);
-        let projected = list_summary(&memory, &[ListField::Name]);
+        let projected = list_summary(&memory, &[ListToolField::Name]);
         assert_eq!(projected, serde_json::json!({"name": "alpha"}));
 
-        let legacy = list_summary(&memory, &ListField::ALL);
+        let legacy = list_summary(&memory, &ListToolField::DEFAULT);
         let object = legacy.as_object().expect("summary object");
         assert_eq!(object.len(), 6);
         for field in ["id", "name", "scope", "tags", "created_at", "updated_at"] {
@@ -3362,11 +3539,13 @@ mod tests {
         let page = paginate_list(
             vec![list_test_memory("alpha", Scope::Root, vec![])],
             &ScopeFilter::RootOnly,
+            &TagFilter::default(),
             25,
             None,
-            &[ListField::Name],
+            &[ListToolField::Name],
         )
-        .expect("final page");
+        .expect("final page")
+        .json;
         let page: serde_json::Value = serde_json::from_str(&page).expect("JSON page");
         assert_eq!(
             page,
@@ -3389,11 +3568,13 @@ mod tests {
                 list_test_memory("bravo", Scope::Root, vec![]),
             ],
             &ScopeFilter::RootOnly,
+            &TagFilter::default(),
             1,
             None,
-            &[ListField::Name],
+            &[ListToolField::Name],
         )
-        .expect("nonfinal page");
+        .expect("nonfinal page")
+        .json;
         let page: serde_json::Value = serde_json::from_str(&page).expect("JSON page");
         let cursor = page["next_cursor"].as_str().expect("next cursor");
         assert!(decode_list_cursor(cursor, "root").is_ok());
@@ -3415,11 +3596,13 @@ mod tests {
         let page = paginate_list(
             vec![],
             &ScopeFilter::RootOnly,
+            &TagFilter::default(),
             LIST_DEFAULT_LIMIT,
             None,
-            &[ListField::Name],
+            &[ListToolField::Name],
         )
-        .expect("empty page");
+        .expect("empty page")
+        .json;
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&page).expect("JSON page"),
             serde_json::json!({
@@ -3455,11 +3638,13 @@ mod tests {
             let page = paginate_list(
                 memories.clone(),
                 &ScopeFilter::RootOnly,
+                &TagFilter::default(),
                 LIST_MAX_LIMIT,
                 decoded,
-                &ListField::ALL,
+                &ListToolField::DEFAULT,
             )
-            .expect("bounded page");
+            .expect("bounded page")
+            .json;
             assert!(page.len() <= LIST_PAGE_MAX_BYTES, "{} bytes", page.len());
             let value: serde_json::Value = serde_json::from_str(&page).expect("JSON page");
             assert_eq!(value["count"], memories.len());
@@ -3488,27 +3673,880 @@ mod tests {
         let error = paginate_list(
             memories.clone(),
             &ScopeFilter::RootOnly,
+            &TagFilter::default(),
             1,
             None,
-            &ListField::ALL,
+            &ListToolField::DEFAULT,
         )
         .expect_err("legacy projection is too large");
         assert!(matches!(error, MemoryError::InvalidInput { .. }));
+        // Regression: the hint told callers who never requested content to omit it.
+        assert!(!error.to_string().contains("content"), "{error}");
 
         let page = paginate_list(
             memories,
             &ScopeFilter::RootOnly,
+            &TagFilter::default(),
             1,
             None,
-            &[ListField::Name],
+            &[ListToolField::Name],
         )
-        .expect("lean projection fits");
+        .expect("lean projection fits")
+        .json;
         assert!(page.len() <= LIST_PAGE_MAX_BYTES);
         let value: serde_json::Value = serde_json::from_str(&page).expect("JSON page");
         assert_eq!(
             value["memories"],
             serde_json::json!([{"name": "huge-tags"}])
         );
+    }
+
+    fn tags(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    fn tag_corpus() -> Vec<Memory> {
+        vec![
+            list_test_memory(
+                "design-rust",
+                Scope::Root,
+                tags(&["lens:Design", "lang:rust"]),
+            ),
+            list_test_memory("misc", Scope::Root, tags(&["fortune"])),
+            list_test_memory(
+                "safety-any",
+                Scope::Root,
+                tags(&["lens:Safety", "lang:any"]),
+            ),
+            list_test_memory(
+                "safety-design-ts",
+                Scope::Root,
+                tags(&["lens:Safety", "lens:Design", "lang:ts"]),
+            ),
+            list_test_memory(
+                "safety-rust",
+                Scope::Root,
+                tags(&["lens:Safety", "lang:rust"]),
+            ),
+            list_test_memory("untagged", Scope::Root, vec![]),
+        ]
+    }
+
+    fn page_names(page: &str) -> Vec<String> {
+        let value: serde_json::Value = serde_json::from_str(page).expect("JSON page");
+        value["memories"]
+            .as_array()
+            .expect("memories")
+            .iter()
+            .map(|memory| memory["name"].as_str().expect("name").to_string())
+            .collect()
+    }
+
+    fn filtered_names(filter: &TagFilter) -> Vec<String> {
+        let page = paginate_list(
+            tag_corpus(),
+            &ScopeFilter::RootOnly,
+            filter,
+            LIST_MAX_LIMIT,
+            None,
+            &[ListToolField::Name],
+        )
+        .expect("filtered page")
+        .json;
+        page_names(&page)
+    }
+
+    #[test]
+    fn list_page_reports_the_filtered_totals() {
+        let page = paginate_list(
+            tag_corpus(),
+            &ScopeFilter::RootOnly,
+            &TagFilter::new(tags(&["lens:Safety"]), Vec::new()),
+            2,
+            None,
+            &[ListToolField::Name],
+        )
+        .expect("page");
+        assert_eq!((page.count, page.returned), (3, 2));
+        let value: serde_json::Value = serde_json::from_str(&page.json).expect("JSON");
+        assert_eq!(
+            (value["count"].clone(), value["returned"].clone()),
+            (3.into(), 2.into())
+        );
+    }
+
+    // Regression: the handler.list span recorded the pre-tag-filter scope
+    // size as `count`, contradicting the response `count` for every
+    // filtered call. Drives the real handler so its span declarations count.
+    #[test]
+    fn list_handler_span_records_filtered_totals_and_request_shape() {
+        let logs = capture_info_logs(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            runtime.block_on(async {
+                let temp = tempfile::tempdir().expect("tempdir");
+                let repo = Arc::new(MemoryRepo::init_or_open(temp.path(), None).expect("repo"));
+                for memory in tag_corpus() {
+                    repo.save_memory(&memory).await.expect("seed memory");
+                }
+                list_test_server(repo)
+                    .list(
+                        Parameters(ListToolArgs {
+                            scope: None,
+                            limit: Some(2),
+                            cursor: None,
+                            fields: Some(vec![ListToolField::Name, ListToolField::Content]),
+                            tags_all: tags(&["lens:Safety"]),
+                            tags_any: Vec::new(),
+                        }),
+                        Extension(list_test_parts()),
+                    )
+                    .await
+                    .expect("list");
+            });
+        });
+
+        let line = logs
+            .lines()
+            .find(|line| line.contains("listed memories"))
+            .unwrap_or_else(|| panic!("no completion line; logs: {logs}"));
+        for field in [
+            "scope_count=6",
+            " count=3",
+            "returned=2",
+            "page_bytes=",
+            "tags_all=1",
+            "tags_any=0",
+            "content=true",
+        ] {
+            assert!(line.contains(field), "missing {field:?}; line: {line}");
+        }
+    }
+
+    // Regression: dropping the tags_all predicate returns every memory.
+    #[test]
+    fn list_tags_all_requires_every_tag() {
+        let filter = TagFilter::new(tags(&["lens:Safety", "lens:Design"]), Vec::new());
+        assert_eq!(filtered_names(&filter), ["safety-design-ts"]);
+
+        let filter = TagFilter::new(tags(&["lens:Safety"]), Vec::new());
+        assert_eq!(
+            filtered_names(&filter),
+            ["safety-any", "safety-design-ts", "safety-rust"]
+        );
+    }
+
+    // Regression: treating tags_any as "all" would return nothing here.
+    #[test]
+    fn list_tags_any_requires_at_least_one_tag() {
+        let filter = TagFilter::new(Vec::new(), tags(&["lang:any", "lang:rust"]));
+        assert_eq!(
+            filtered_names(&filter),
+            ["design-rust", "safety-any", "safety-rust"]
+        );
+    }
+
+    // The per-lens corpus query: one lens, any of the detected languages.
+    #[test]
+    fn list_tags_all_and_any_combine_conjunctively() {
+        let filter = TagFilter::new(tags(&["lens:Safety"]), tags(&["lang:any", "lang:rust"]));
+        assert_eq!(filtered_names(&filter), ["safety-any", "safety-rust"]);
+    }
+
+    // Regression: case-folding or substring matching would admit these.
+    #[test]
+    fn list_tag_matching_is_exact_and_case_sensitive() {
+        for probe in [
+            "lens:safety",
+            "LENS:SAFETY",
+            "lens:Safe",
+            "Safety",
+            " lens:Safety",
+        ] {
+            let filter = TagFilter::new(tags(&[probe]), Vec::new());
+            assert!(
+                filtered_names(&filter).is_empty(),
+                "tags_all {probe:?} must not match"
+            );
+            let filter = TagFilter::new(Vec::new(), tags(&[probe]));
+            assert!(
+                filtered_names(&filter).is_empty(),
+                "tags_any {probe:?} must not match"
+            );
+        }
+    }
+
+    #[test]
+    fn list_empty_tag_arrays_apply_no_filter() {
+        let empty = TagFilter::new(vec![], vec![]);
+        assert!(empty.is_empty());
+        assert_eq!(filtered_names(&empty).len(), tag_corpus().len());
+        // Empty arrays must keep pre-filter cursors valid.
+        assert_eq!(
+            list_filter_key(&ScopeFilter::RootOnly, &empty),
+            list_filter_key(&ScopeFilter::RootOnly, &TagFilter::default())
+        );
+    }
+
+    // Cursors issued before tag filters existed carry the filter keys
+    // `root`, `all` and `subtree:<path>`. An unfiltered list must keep
+    // producing exactly those, or every outstanding cursor is rejected.
+    #[test]
+    fn list_unfiltered_keys_accept_pre_tag_filter_cursors() {
+        let none = TagFilter::default();
+        let path = crate::types::ScopePath::new("org/a").expect("valid scope");
+        assert_eq!(list_filter_key(&ScopeFilter::RootOnly, &none), "root");
+        assert_eq!(list_filter_key(&ScopeFilter::All, &none), "all");
+        assert_eq!(
+            list_filter_key(&ScopeFilter::Subtree(path), &none),
+            "subtree:org/a"
+        );
+        // Encoded by hand from the version-1 payload
+        // {"version":1,"filter":"root","scope":"global","name":"safety-any"},
+        // not by `encode_list_cursor`.
+        const LEGACY_ROOT: &str =
+            "lc1_eyJ2ZXJzaW9uIjoxLCJmaWx0ZXIiOiJyb290Iiwic2NvcGUiOiJnbG9iYWwiLCJuYW1lIjoic2FmZXR5LWFueSJ9";
+        let decoded =
+            decode_list_cursor(LEGACY_ROOT, &list_filter_key(&ScopeFilter::RootOnly, &none))
+                .expect("a pre-tag-filter cursor must still decode");
+        assert_eq!(decoded.key.scope, "global");
+        assert_eq!(decoded.key.name, "safety-any");
+    }
+
+    // Regression: filtering after pagination would yield short or empty
+    // pages, a total count of all memories, and has_more on a filtered tail.
+    #[test]
+    fn list_tag_filter_applies_before_pagination() {
+        let filter = TagFilter::new(tags(&["lens:Safety"]), Vec::new());
+        let mut cursor: Option<String> = None;
+        let mut walked = Vec::new();
+        let key = list_filter_key(&ScopeFilter::RootOnly, &filter);
+        loop {
+            let decoded = cursor
+                .as_deref()
+                .map(|cursor| decode_list_cursor(cursor, &key).expect("cursor"));
+            let page = paginate_list(
+                tag_corpus(),
+                &ScopeFilter::RootOnly,
+                &filter,
+                1,
+                decoded,
+                &[ListToolField::Name],
+            )
+            .expect("page")
+            .json;
+            let value: serde_json::Value = serde_json::from_str(&page).expect("JSON page");
+            assert_eq!(value["count"], 3);
+            assert_eq!(value["returned"], 1);
+            walked.extend(page_names(&page));
+            cursor = value["next_cursor"].as_str().map(str::to_string);
+            if cursor.is_none() {
+                assert_eq!(value["has_more"], false);
+                break;
+            }
+        }
+        assert_eq!(walked, ["safety-any", "safety-design-ts", "safety-rust"]);
+    }
+
+    // Regression: a cursor reused under a different tag filter would resume
+    // at a keyset position computed for another result set.
+    #[test]
+    fn list_cursor_is_bound_to_tag_filter() {
+        let safety = TagFilter::new(tags(&["lens:Safety"]), Vec::new());
+        let design = TagFilter::new(tags(&["lens:Design"]), Vec::new());
+        let safety_as_any = TagFilter::new(Vec::new(), tags(&["lens:Safety"]));
+        let none = TagFilter::default();
+        let scope = ScopeFilter::RootOnly;
+        let key = ListSortKey {
+            scope: "global".to_string(),
+            name: "safety-any".to_string(),
+        };
+        let cursor = encode_list_cursor(&list_filter_key(&scope, &safety), &key).expect("cursor");
+
+        for other in [&design, &safety_as_any, &none] {
+            assert!(
+                matches!(
+                    decode_list_cursor(&cursor, &list_filter_key(&scope, other)),
+                    Err(MemoryError::InvalidInput { .. })
+                ),
+                "cursor for {safety:?} must be rejected under {other:?}"
+            );
+        }
+        let unfiltered = encode_list_cursor(&list_filter_key(&scope, &none), &key).expect("cursor");
+        assert!(matches!(
+            decode_list_cursor(&unfiltered, &list_filter_key(&scope, &safety)),
+            Err(MemoryError::InvalidInput { .. })
+        ));
+        assert!(matches!(
+            decode_list_cursor(&cursor, &list_filter_key(&ScopeFilter::All, &safety)),
+            Err(MemoryError::InvalidInput { .. })
+        ));
+
+        // Same sets, different order and non-adjacent duplicates: still the
+        // same filter. Regression: an order-sensitive key rejected the cursor.
+        let issued = TagFilter::new(
+            tags(&["lens:Design", "lens:Safety"]),
+            tags(&["lang:rust", "lang:any"]),
+        );
+        let multi = encode_list_cursor(&list_filter_key(&scope, &issued), &key).expect("cursor");
+        let reordered = TagFilter::new(
+            tags(&["lens:Safety", "lens:Design", "lens:Safety"]),
+            tags(&["lang:any", "lang:rust", "lang:any"]),
+        );
+        assert_eq!(issued, reordered);
+        assert!(decode_list_cursor(&multi, &list_filter_key(&scope, &reordered)).is_ok());
+    }
+
+    #[tokio::test]
+    async fn list_mcp_handler_filters_by_tags_and_binds_cursor() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = Arc::new(MemoryRepo::init_or_open(temp.path(), None).expect("repo"));
+        for memory in tag_corpus() {
+            repo.save_memory(&memory).await.expect("seed memory");
+        }
+        let server = list_test_server(repo);
+        let list = |cursor: Option<String>, tags_all: Vec<String>| {
+            server.list(
+                Parameters(ListToolArgs {
+                    scope: None,
+                    limit: Some(1),
+                    cursor,
+                    fields: Some(vec![ListToolField::Name]),
+                    tags_all,
+                    tags_any: tags(&["lang:any", "lang:rust"]),
+                }),
+                Extension(list_test_parts()),
+            )
+        };
+
+        let first = list(None, tags(&["lens:Safety"]))
+            .await
+            .expect("first page");
+        let first_value: serde_json::Value = serde_json::from_str(&first).expect("JSON");
+        assert_eq!(page_names(&first), ["safety-any"]);
+        assert_eq!(first_value["count"], 2);
+        let cursor = first_value["next_cursor"]
+            .as_str()
+            .expect("cursor")
+            .to_string();
+
+        let second = list(Some(cursor.clone()), tags(&["lens:Safety"]))
+            .await
+            .expect("second page");
+        assert_eq!(page_names(&second), ["safety-rust"]);
+
+        let mismatched = list(Some(cursor), tags(&["lens:Design"]))
+            .await
+            .expect_err("cursor from another tag filter must fail");
+        assert_eq!(mismatched.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+    }
+
+    /// Embeds by keyword so ranking is controllable: texts containing
+    /// "target" sit on the query's axis, everything else is far from it.
+    struct KeywordEmbedding;
+
+    #[async_trait]
+    impl EmbeddingBackend for KeywordEmbedding {
+        async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, MemoryError> {
+            Ok(texts
+                .iter()
+                .map(|text| {
+                    let on_axis = if text.contains("target") { 1.0 } else { 0.0 };
+                    vec![on_axis, 0.1, 0.0, 0.0]
+                })
+                .collect())
+        }
+
+        fn dimensions(&self) -> usize {
+            4
+        }
+    }
+
+    async fn recall_names(
+        server: &MemoryServer,
+        limit: usize,
+        tags_all: Vec<String>,
+        tags_any: Vec<String>,
+    ) -> Vec<String> {
+        recall_names_in(server, None, limit, tags_all, tags_any).await
+    }
+
+    async fn recall_names_in(
+        server: &MemoryServer,
+        scope: Option<&str>,
+        limit: usize,
+        tags_all: Vec<String>,
+        tags_any: Vec<String>,
+    ) -> Vec<String> {
+        let response = server
+            .recall(
+                Parameters(RecallToolArgs {
+                    query: "target".to_string(),
+                    scope: scope.map(str::to_string),
+                    limit: Some(limit),
+                    tags_all,
+                    tags_any,
+                }),
+                Extension(list_test_parts()),
+            )
+            .await
+            .expect("recall");
+        let response: serde_json::Value = serde_json::from_str(&response).expect("JSON");
+        response["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .map(|result| result["name"].as_str().expect("name").to_string())
+            .collect()
+    }
+
+    // Regression: post-filtering the top-k would return nothing for limit 1,
+    // because the untagged decoy ranks first on both semantic and BM25.
+    #[tokio::test]
+    async fn recall_tag_prefilter_excludes_top_ranked_non_matching_memories() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = Arc::new(MemoryRepo::init_or_open(temp.path(), None).expect("repo"));
+        let server = test_server_with(repo, Box::new(KeywordEmbedding));
+        for (name, content, memory_tags) in [
+            ("decoy", "target target target", tags(&["fortune"])),
+            (
+                "keeper",
+                "an unrelated note",
+                tags(&["lens:Safety", "lang:rust"]),
+            ),
+            (
+                "other-lens",
+                "another unrelated note",
+                tags(&["lens:Design", "lang:ts"]),
+            ),
+        ] {
+            remember_tagged(&server, name, content, None, memory_tags).await;
+        }
+
+        assert_eq!(
+            recall_names(&server, 1, Vec::new(), Vec::new()).await,
+            ["decoy"],
+            "precondition: the decoy outranks everything unfiltered"
+        );
+        assert_eq!(
+            recall_names(&server, 1, tags(&["lens:Safety"]), Vec::new()).await,
+            ["keeper"]
+        );
+        assert_eq!(
+            recall_names(&server, 5, Vec::new(), tags(&["lang:rust", "lang:any"])).await,
+            ["keeper"]
+        );
+        assert_eq!(
+            recall_names(&server, 5, tags(&["lens:Safety"]), tags(&["lang:ts"])).await,
+            Vec::<String>::new(),
+            "tags_all and tags_any combine conjunctively"
+        );
+        assert!(
+            recall_names(&server, 5, tags(&["lens:safety"]), Vec::new())
+                .await
+                .is_empty(),
+            "tag matching is case-sensitive"
+        );
+        assert_eq!(
+            recall_names(&server, 1, vec![], vec![]).await,
+            ["decoy"],
+            "empty arrays apply no filter"
+        );
+    }
+
+    fn test_server_with(
+        repo: Arc<MemoryRepo>,
+        embedding: Box<dyn EmbeddingBackend>,
+    ) -> MemoryServer {
+        MemoryServer::new(Arc::new(AppState::new(
+            repo,
+            "main".to_string(),
+            embedding,
+            Box::new(InMemoryStore::new(4)),
+            AuthProvider::new(),
+            HealthRegistry::new(),
+            None,
+        )))
+    }
+
+    async fn remember_tagged(
+        server: &MemoryServer,
+        name: &str,
+        content: &str,
+        scope: Option<&str>,
+        memory_tags: Vec<String>,
+    ) {
+        server
+            .remember(
+                Parameters(RememberArgs {
+                    content: content.to_string(),
+                    name: name.to_string(),
+                    tags: memory_tags,
+                    scope: scope.map(str::to_string),
+                    source: None,
+                }),
+                Extension(list_test_parts()),
+            )
+            .await
+            .expect("remember");
+    }
+
+    // The motivating call runs in a namespace. Regression: an allow-list or
+    // listing that loses root memories, nested descendants, or the
+    // namespace's own memories, or that leaks a sibling namespace.
+    #[tokio::test]
+    async fn tag_filters_honour_namespace_subtree_scope() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = Arc::new(MemoryRepo::init_or_open(temp.path(), None).expect("repo"));
+        let server = test_server_with(repo, Box::new(KeywordEmbedding));
+        let safety = || tags(&["lens:Safety"]);
+        remember_tagged(&server, "proj-decoy", "target target", Some("proj"), vec![]).await;
+        remember_tagged(&server, "root-match", "plain note", None, safety()).await;
+        remember_tagged(&server, "proj-match", "plain note", Some("proj"), safety()).await;
+        remember_tagged(
+            &server,
+            "sub-match",
+            "plain note",
+            Some("proj/sub"),
+            safety(),
+        )
+        .await;
+        remember_tagged(
+            &server,
+            "other-match",
+            "plain note",
+            Some("other"),
+            safety(),
+        )
+        .await;
+        let expected = ["proj-match", "root-match", "sub-match"];
+
+        let mut recalled = recall_names_in(&server, Some("proj"), 10, safety(), Vec::new()).await;
+        recalled.sort();
+        assert_eq!(recalled, expected);
+
+        let page = server
+            .list(
+                Parameters(ListToolArgs {
+                    scope: Some("proj".to_string()),
+                    limit: None,
+                    cursor: None,
+                    fields: Some(vec![ListToolField::Name]),
+                    tags_all: safety(),
+                    tags_any: Vec::new(),
+                }),
+                Extension(list_test_parts()),
+            )
+            .await
+            .expect("list");
+        let mut listed = page_names(&page);
+        listed.sort();
+        assert_eq!(listed, expected);
+    }
+
+    /// [`KeywordEmbedding`] that, once armed, strips `victim`'s tags in git
+    /// while recall embeds its query — after the allow-list is built and
+    /// before results are read back.
+    struct UntaggingEmbedding {
+        repo: Arc<MemoryRepo>,
+        armed: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait]
+    impl EmbeddingBackend for UntaggingEmbedding {
+        async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, MemoryError> {
+            if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                let mut victim = self.repo.read_memory("victim", &Scope::Root).await?;
+                victim.metadata.tags.clear();
+                self.repo.save_memory(&victim).await?;
+            }
+            KeywordEmbedding.embed(texts).await
+        }
+
+        fn dimensions(&self) -> usize {
+            4
+        }
+    }
+
+    // Regression: without the post-read re-check, a memory whose tags were
+    // edited away mid-recall is still returned because the allow-list
+    // snapshot admitted it.
+    #[tokio::test]
+    async fn recall_rechecks_tags_after_reading_each_result() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo = Arc::new(MemoryRepo::init_or_open(temp.path(), None).expect("repo"));
+        let armed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let embedding = UntaggingEmbedding {
+            repo: Arc::clone(&repo),
+            armed: Arc::clone(&armed),
+        };
+        let server = test_server_with(repo, Box::new(embedding));
+        remember_tagged(
+            &server,
+            "victim",
+            "target note",
+            None,
+            tags(&["lens:Safety"]),
+        )
+        .await;
+
+        assert_eq!(
+            recall_names(&server, 5, tags(&["lens:Safety"]), Vec::new()).await,
+            ["victim"],
+            "precondition: the tagged memory is recalled"
+        );
+        armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            recall_names(&server, 5, tags(&["lens:Safety"]), Vec::new())
+                .await
+                .is_empty(),
+            "a memory untagged mid-recall must be dropped"
+        );
+    }
+
+    // Regression: recall built its tag allow-list from the lenient listing,
+    // which skips an unreadable mapped repo, so a tag-filtered recall
+    // silently dropped that repo's matches. It must fail instead, while
+    // list (lenient by contract), untagged recall, and recalls the broken
+    // repo cannot serve keep working.
+    #[tokio::test]
+    async fn tag_filtered_recall_fails_when_a_serving_repo_is_unreadable() {
+        let default_dir = tempfile::tempdir().expect("tempdir");
+        let work_dir = tempfile::tempdir().expect("tempdir");
+        let default_repo =
+            Arc::new(MemoryRepo::init_or_open(default_dir.path(), None).expect("default repo"));
+        let health = HealthRegistry::new();
+        let mapping = crate::config::RemoteMapping {
+            scope: "work".to_string(),
+            url: "file:///nonexistent/pali-test-remote.git".to_string(),
+            path: Some(work_dir.path().display().to_string()),
+            branch: None,
+        };
+        let router = RepoRouter::from_config(
+            Arc::clone(&default_repo),
+            std::slice::from_ref(&mapping),
+            &health.git,
+            &health.sync,
+        )
+        .expect("router");
+        let server = MemoryServer::new(Arc::new(AppState::with_router(
+            default_repo,
+            router,
+            "main".to_string(),
+            Box::new(KeywordEmbedding),
+            Box::new(InMemoryStore::new(4)),
+            AuthProvider::new(),
+            health,
+            None,
+        )));
+        let safety = || tags(&["lens:Safety"]);
+        remember_tagged(&server, "work-match", "target note", Some("work"), safety()).await;
+        remember_tagged(&server, "root-match", "target note", None, safety()).await;
+        let mut both = recall_names_in(&server, Some("work"), 5, safety(), Vec::new()).await;
+        both.sort();
+        assert_eq!(
+            both,
+            ["root-match", "work-match"],
+            "precondition: both repos serve the namespace recall"
+        );
+
+        // A non-UTF-8 memory file makes any listing that reads its directory
+        // fail: the work scope itself, and the work repo's global/, which a
+        // root listing would read if the route were not filtered out.
+        for dir in [
+            work_dir.path().join("projects").join("work"),
+            work_dir.path().join("global"),
+        ] {
+            std::fs::create_dir_all(&dir).expect("create dir");
+            std::fs::write(dir.join("bad.md"), [0xff, 0xfe, 0xfd])
+                .expect("plant unreadable memory");
+        }
+
+        let recall = |scope: Option<&str>, tags_all: Vec<String>| {
+            server.recall(
+                Parameters(RecallToolArgs {
+                    query: "target".to_string(),
+                    scope: scope.map(str::to_string),
+                    limit: Some(5),
+                    tags_all,
+                    tags_any: Vec::new(),
+                }),
+                Extension(list_test_parts()),
+            )
+        };
+        let error = recall(Some("work"), safety())
+            .await
+            .expect_err("tag-filtered recall over the broken repo must fail");
+        assert_eq!(
+            error.code,
+            rmcp::model::ErrorCode::INTERNAL_ERROR,
+            "{error:?}"
+        );
+        assert!(error.message.contains("UTF-8"), "{error:?}");
+
+        let untagged: serde_json::Value = serde_json::from_str(
+            &recall(Some("work"), Vec::new())
+                .await
+                .expect("untagged recall is not built from a listing"),
+        )
+        .expect("JSON");
+        let mut untagged: Vec<_> = untagged["results"]
+            .as_array()
+            .expect("results")
+            .iter()
+            .map(|result| result["name"].as_str().expect("name").to_string())
+            .collect();
+        untagged.sort();
+        assert_eq!(untagged, ["root-match", "work-match"]);
+        assert_eq!(
+            recall_names_in(&server, None, 5, safety(), Vec::new()).await,
+            ["root-match"],
+            "the broken repo cannot serve a root-only recall"
+        );
+        let page = server
+            .list(
+                Parameters(ListToolArgs {
+                    scope: Some("work".to_string()),
+                    limit: None,
+                    cursor: None,
+                    fields: Some(vec![ListToolField::Name]),
+                    tags_all: safety(),
+                    tags_any: Vec::new(),
+                }),
+                Extension(list_test_parts()),
+            )
+            .await
+            .expect("list keeps its lenient listing");
+        assert_eq!(
+            page_names(&page),
+            ["root-match"],
+            "the lenient list skips the broken repo"
+        );
+    }
+
+    fn content_memory(name: &str, content: &str) -> Memory {
+        Memory::new(
+            name,
+            content,
+            MemoryMetadata::new(Scope::Root, tags(&["lens:Safety"]), None),
+        )
+        .expect("valid memory")
+    }
+
+    // Regression: a projection that ignores `content` returns only names.
+    #[test]
+    fn list_content_field_projects_the_full_body_on_request_only() {
+        let body = "first line\n\nsecond paragraph with `code`";
+        let memories = vec![content_memory("principle", body)];
+        let page = paginate_list(
+            memories.clone(),
+            &ScopeFilter::RootOnly,
+            &TagFilter::default(),
+            10,
+            None,
+            &[ListToolField::Name, ListToolField::Content],
+        )
+        .expect("content page")
+        .json;
+        let value: serde_json::Value = serde_json::from_str(&page).expect("JSON page");
+        assert_eq!(
+            value["memories"],
+            serde_json::json!([{"name": "principle", "content": body}])
+        );
+
+        let legacy = paginate_list(
+            memories,
+            &ScopeFilter::RootOnly,
+            &TagFilter::default(),
+            10,
+            None,
+            &ListToolField::DEFAULT,
+        )
+        .expect("legacy page")
+        .json;
+        let value: serde_json::Value = serde_json::from_str(&legacy).expect("JSON page");
+        assert!(value["memories"][0].get("content").is_none());
+    }
+
+    // Content makes the 24 KiB cap reachable well below `limit`. Regression:
+    // erroring, exceeding the cap, or dropping bodies at the page boundary.
+    #[test]
+    fn list_content_over_page_cap_splits_pages_with_has_more() {
+        let memories: Vec<_> = (0..12)
+            .map(|index| {
+                content_memory(
+                    &format!("principle-{index:02}"),
+                    &format!("{index:02}:{}", "y".repeat(5_000)),
+                )
+            })
+            .collect();
+        let fields = [ListToolField::Name, ListToolField::Content];
+        let mut cursor = None;
+        let mut walked = Vec::new();
+        let mut pages = 0;
+        loop {
+            let decoded = cursor
+                .as_deref()
+                .map(|cursor| decode_list_cursor(cursor, "root").expect("cursor"));
+            let page = paginate_list(
+                memories.clone(),
+                &ScopeFilter::RootOnly,
+                &TagFilter::default(),
+                LIST_MAX_LIMIT,
+                decoded,
+                &fields,
+            )
+            .expect("content page within the cap")
+            .json;
+            assert!(page.len() <= LIST_PAGE_MAX_BYTES, "{} bytes", page.len());
+            let value: serde_json::Value = serde_json::from_str(&page).expect("JSON page");
+            let returned = value["returned"].as_u64().expect("returned");
+            assert!(returned > 0 && returned < 12, "returned {returned}");
+            for memory in value["memories"].as_array().expect("memories") {
+                let content = memory["content"].as_str().expect("content");
+                assert_eq!(content.len(), 5_003, "body must not be truncated");
+                walked.push(memory["name"].as_str().expect("name").to_string());
+            }
+            pages += 1;
+            cursor = value["next_cursor"].as_str().map(str::to_string);
+            assert_eq!(value["has_more"], cursor.is_some());
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let expected: Vec<_> = (0..12)
+            .map(|index| format!("principle-{index:02}"))
+            .collect();
+        assert_eq!(walked, expected);
+        assert!(pages > 1);
+    }
+
+    #[test]
+    fn list_single_content_over_page_cap_requires_leaner_projection() {
+        let memories = vec![content_memory("huge", &"z".repeat(LIST_PAGE_MAX_BYTES))];
+        let error = paginate_list(
+            memories.clone(),
+            &ScopeFilter::RootOnly,
+            &TagFilter::default(),
+            1,
+            None,
+            &[ListToolField::Name, ListToolField::Content],
+        )
+        .expect_err("one oversized body cannot fit any page");
+        assert!(matches!(error, MemoryError::InvalidInput { .. }));
+        assert!(error.to_string().contains("content"), "{error}");
+
+        paginate_list(
+            memories,
+            &ScopeFilter::RootOnly,
+            &TagFilter::default(),
+            1,
+            None,
+            &[ListToolField::Name],
+        )
+        .expect("projection without content fits");
     }
 
     #[test]
@@ -3907,10 +4945,12 @@ fcc = "http://127.0.0.1:9/mcp"
             // Recall must succeed (semantic-only) while degraded…
             server
                 .recall(
-                    Parameters(RecallArgs {
+                    Parameters(RecallToolArgs {
                         query: "healme".to_string(),
                         scope: None,
                         limit: Some(5),
+                        tags_all: Vec::new(),
+                        tags_any: Vec::new(),
                     }),
                     Extension(parts()),
                 )
@@ -5579,10 +6619,12 @@ fcc = "http://127.0.0.1:9/mcp"
             // schedules the repair…
             server
                 .recall(
-                    Parameters(RecallArgs {
+                    Parameters(RecallToolArgs {
                         query: "listword".to_string(),
                         scope: None,
                         limit: Some(5),
+                        tags_all: Vec::new(),
+                        tags_any: Vec::new(),
                     }),
                     Extension(parts()),
                 )

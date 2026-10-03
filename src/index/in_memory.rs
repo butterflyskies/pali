@@ -171,6 +171,18 @@ impl VectorStore for InMemoryStore {
         Ok(candidates)
     }
 
+    fn search_bound(&self, filter: &ScopeFilter) -> usize {
+        let state = self
+            .state
+            .lock()
+            .expect("lock poisoned — prior panic corrupted state");
+        state
+            .entries
+            .values()
+            .filter(|(scope, _)| filter.matches(scope))
+            .count()
+    }
+
     fn find_by_name(&self, qualified_name: &str) -> Option<u64> {
         let state = self
             .state

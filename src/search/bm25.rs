@@ -761,6 +761,18 @@ impl LexicalIndex {
         results.truncate(limit);
         Ok(results)
     }
+
+    /// A `limit` at which [`Self::search`] is guaranteed to return every
+    /// in-scope match: the number of indexed documents. It is conservative,
+    /// not query-specific; a smaller limit may already suffice. A pass scans
+    /// at most `max(MAX_CANDIDATES, limit)` matches, drops out-of-scope ones,
+    /// and cuts the rest to `limit`, so below this bound a pass can hide
+    /// in-scope matches even when it returns fewer than `limit`.
+    pub(crate) fn search_bound(&self) -> usize {
+        self.inner().map_or(0, |inner| {
+            usize::try_from(inner.reader.searcher().num_docs()).unwrap_or(usize::MAX)
+        })
+    }
 }
 
 impl Inner {

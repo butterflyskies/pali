@@ -123,6 +123,10 @@ struct VectorState<R: RawIndex> {
 struct VectorIndex<R: RawIndex = UsearchRawIndex> {
     state: Mutex<VectorState<R>>,
     entry_count: AtomicUsize,
+    /// `index.size()` as of the last mutation, so a size read needs no lock.
+    /// Refreshed from the index itself while the lock is held, never counted
+    /// by hand: the raw index can hold keys the key map does not.
+    raw_count: AtomicUsize,
 }
 
 /// Lock the mutex, panicking with a consistent message if the lock is poisoned.
@@ -176,6 +180,7 @@ impl VectorIndex<UsearchRawIndex> {
         }
 
         let count = key_map.len();
+        let raw = inner.size();
         Ok(Self {
             state: Mutex::new(VectorState {
                 index: UsearchRawIndex { inner },
@@ -185,6 +190,7 @@ impl VectorIndex<UsearchRawIndex> {
                 commit_sha,
             }),
             entry_count: AtomicUsize::new(count),
+            raw_count: AtomicUsize::new(raw),
         })
     }
 }
@@ -252,6 +258,7 @@ fn raw_err(e: RawIndexError) -> MemoryError {
 impl<R: RawIndex> VectorIndex<R> {
     fn new(dimensions: usize) -> Result<Self, MemoryError> {
         let index = R::create(dimensions).map_err(raw_err)?;
+        let raw = index.size();
         Ok(Self {
             state: Mutex::new(VectorState {
                 index,
@@ -261,7 +268,14 @@ impl<R: RawIndex> VectorIndex<R> {
                 commit_sha: None,
             }),
             entry_count: AtomicUsize::new(0),
+            raw_count: AtomicUsize::new(raw),
         })
+    }
+
+    /// Publish the raw index size. Call with the lock held, after any
+    /// mutation of `state.index`, on success and failure alike.
+    fn sync_raw_count(&self, state: &VectorState<R>) {
+        self.raw_count.store(state.index.size(), Ordering::Relaxed);
     }
 
     fn grow_if_needed_inner(state: &VectorState<R>, additional: usize) -> Result<(), MemoryError> {
@@ -285,7 +299,9 @@ impl<R: RawIndex> VectorIndex<R> {
         let mut state = lock!(self.state);
         Self::grow_if_needed_inner(&state, 1)?;
         let key = state.next_key;
-        state.index.add(key, vector).map_err(raw_err)?;
+        let added = state.index.add(key, vector);
+        self.sync_raw_count(&state);
+        added.map_err(raw_err)?;
         state.name_map.insert(name.clone(), key);
         state.key_map.insert(key, name);
         state.next_key = state
@@ -321,7 +337,9 @@ impl<R: RawIndex> VectorIndex<R> {
     /// Remove a vector by key.
     fn remove(&self, key: u64) -> Result<(), MemoryError> {
         let mut state = lock!(self.state);
-        state.index.remove(key).map_err(raw_err)?;
+        let removed = state.index.remove(key);
+        self.sync_raw_count(&state);
+        removed.map_err(raw_err)?;
         if let Some(name) = state.key_map.remove(&key) {
             // Only remove from name_map if it still points to this key.
             // An upsert may have already updated name_map to point to a newer key.
@@ -347,6 +365,7 @@ impl<R: RawIndex> VectorIndex<R> {
         if let Err(e) = state.index.remove(new_key) {
             tracing::warn!(error = %e, "rollback: raw index remove failed");
         }
+        self.sync_raw_count(&state);
         // Remove the new key from key_map.
         state.key_map.remove(&new_key);
         // Restore name_map to point to the old key (or remove if no old key).
@@ -356,6 +375,12 @@ impl<R: RawIndex> VectorIndex<R> {
         };
         self.entry_count
             .store(state.key_map.len(), Ordering::Relaxed);
+    }
+
+    /// Return the number of vectors in the raw index, including any whose
+    /// key is absent from the key map and so dropped by [`Self::search`].
+    fn raw_size(&self) -> usize {
+        self.raw_count.load(Ordering::Relaxed)
     }
 
     /// Return the number of entries currently in the key map.
@@ -809,6 +834,23 @@ impl<R: RawIndex> UsearchStoreInner<R> {
         results
     }
 
+    /// Raw vectors a search under `filter` can rank. Unmapped raw keys count,
+    /// since they take window slots before `search` drops them. Subtree
+    /// searches merge several scope indexes and cut to `limit`, so their
+    /// bound is the sum of those indexes' sizes.
+    fn search_bound(&self, filter: &ScopeFilter) -> usize {
+        match filter {
+            ScopeFilter::All => self.all.raw_size(),
+            ScopeFilter::RootOnly => scopes_read!(self.scopes)
+                .get(&Scope::Root)
+                .map_or(0, VectorIndex::raw_size),
+            ScopeFilter::Subtree(_) => scopes_read!(self.scopes)
+                .matching(filter)
+                .into_iter()
+                .fold(0, |sum, (_, idx)| sum.saturating_add(idx.raw_size())),
+        }
+    }
+
     fn find_key_by_name(&self, qualified_name: &str) -> Option<u64> {
         self.all.find_key_by_name(qualified_name)
     }
@@ -913,6 +955,10 @@ impl crate::index::VectorStore for UsearchStore {
         result
     }
 
+    fn search_bound(&self, filter: &ScopeFilter) -> usize {
+        self.inner.search_bound(filter)
+    }
+
     fn find_by_name(&self, qualified_name: &str) -> Option<u64> {
         self.inner.find_key_by_name(qualified_name)
     }
@@ -956,6 +1002,11 @@ mod tests {
     enum FailOn {
         Add,
         Remove,
+        /// Apply the add to the inner index, then report failure: a backend
+        /// that is not failure-atomic.
+        AddAfterMutating,
+        /// Apply the remove to the inner index, then report failure.
+        RemoveAfterMutating,
         Search,
         Save,
         Reserve,
@@ -1018,11 +1069,19 @@ mod tests {
             if self.should_fail(FailOn::Add) {
                 return Err(Self::injected_error("add"));
             }
+            if self.should_fail(FailOn::AddAfterMutating) {
+                self.inner.add(key, vector)?;
+                return Err(Self::injected_error("add"));
+            }
             self.inner.add(key, vector).map_err(Into::into)
         }
 
         fn remove(&self, key: u64) -> Result<(), RawIndexError> {
             if self.should_fail(FailOn::Remove) {
+                return Err(Self::injected_error("remove"));
+            }
+            if self.should_fail(FailOn::RemoveAfterMutating) {
+                self.inner.remove(key)?;
                 return Err(Self::injected_error("remove"));
             }
             self.inner.remove(key).map(|_| ()).map_err(Into::into)
@@ -1077,6 +1136,7 @@ mod tests {
                 commit_sha: None,
             }),
             entry_count: AtomicUsize::new(0),
+            raw_count: AtomicUsize::new(0),
         }
     }
 
@@ -1592,5 +1652,243 @@ mod tests {
             store.is_ready(),
             "TC-06a: UsearchStore::is_ready() should return true"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tag pre-filter: raw keys absent from the key map (#370)
+    // -----------------------------------------------------------------------
+
+    mod prefilter {
+        use std::{collections::HashSet, sync::Arc};
+
+        use super::*;
+        use crate::{
+            embedding::EmbeddingBackend,
+            search::{hybrid_search_within, CandidateAllowList, LexicalIndex},
+            types::{MemoryName, MemoryRef},
+        };
+
+        const QUERY: [f32; 4] = [1.0, 0.0, 0.0, 0.0];
+
+        struct FixedQuery;
+
+        #[async_trait::async_trait]
+        impl EmbeddingBackend for FixedQuery {
+            async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, MemoryError> {
+                Ok(texts.iter().map(|_| QUERY.to_vec()).collect())
+            }
+
+            fn dimensions(&self) -> usize {
+                QUERY.len()
+            }
+        }
+
+        fn key(name: &str) -> String {
+            MemoryRef::new(Scope::Root, MemoryName::new(name.to_string()).unwrap()).qualified_path()
+        }
+
+        /// Add `count` raw vectors next to the query to the all-index with no
+        /// key-map entry, the shape a key map that lost entries its raw index
+        /// still holds leaves behind. `search` drops these keys.
+        fn add_unmapped(store: &UsearchStore, count: u64) {
+            let state = lock!(store.inner.all.state);
+            VectorIndex::grow_if_needed_inner(&state, count as usize).expect("grow");
+            for offset in 0..count {
+                let vector = [1.0, 0.001 * offset as f32, 0.0, 0.0];
+                state
+                    .index
+                    .add(1_000_000 + offset, &vector)
+                    .expect("add unmapped raw key");
+            }
+            store.inner.all.sync_raw_count(&state);
+        }
+
+        async fn recall(
+            store: &UsearchStore,
+            allowed: &[&str],
+            fetch: usize,
+            limit: usize,
+        ) -> Vec<String> {
+            let names: HashSet<String> = allowed.iter().map(|name| key(name)).collect();
+            let hits = hybrid_search_within(
+                &FixedQuery,
+                store,
+                &Arc::new(LexicalIndex::new()),
+                &ScopeFilter::All,
+                "no lexical hit",
+                limit,
+                Some(&CandidateAllowList::new(names, fetch)),
+            )
+            .await
+            .expect("search");
+            hits.into_iter().map(|hit| hit.qualified_name).collect()
+        }
+
+        // Regression: four unmapped raw keys outrank the only allowed memory.
+        // Recall's first window is in-scope count + limit = 2, so windows 2
+        // and 4 both come back empty after the key map drops the raw keys.
+        // Equal visible counts are not exhaustion: window 8 reaches `keeper`.
+        #[tokio::test]
+        async fn widens_past_a_plateau_of_unmapped_raw_keys() {
+            let store = UsearchStore::new(QUERY.len()).expect("create");
+            store
+                .add(&Scope::Root, &[0.0, 1.0, 0.0, 0.0], key("keeper"))
+                .expect("add keeper");
+            add_unmapped(&store, 4);
+
+            assert_eq!(recall(&store, &["keeper"], 2, 1).await, [key("keeper")]);
+        }
+
+        /// Add `count` raw vectors next to the query to the all-index, each
+        /// mapped to `name`: the shape an upsert leaves when its best-effort
+        /// removal of the old key fails, so old and new keys both map to the
+        /// same memory. `search` returns every one of them.
+        fn add_duplicates(store: &UsearchStore, name: &str, count: u64) {
+            let mut state = lock!(store.inner.all.state);
+            VectorIndex::grow_if_needed_inner(&state, count as usize).expect("grow");
+            for offset in 0..count {
+                let raw_key = 2_000_000 + offset;
+                let vector = [1.0, 0.001 * offset as f32, 0.0, 0.0];
+                state
+                    .index
+                    .add(raw_key, &vector)
+                    .expect("add duplicate raw key");
+                state.key_map.insert(raw_key, key(name));
+            }
+            store.inner.all.sync_raw_count(&state);
+        }
+
+        // Regression: three stale keys still mapped to `a` outrank its live
+        // key, so recall's first window (2 in-scope + limit 2 = 4) holds
+        // [a, a, a, a]. Counting rows met `limit` there and cut to [a, a];
+        // fusion deduped that to [a] and silently dropped the allowed `b`.
+        #[tokio::test]
+        async fn counts_distinct_names_past_duplicate_mapped_keys() {
+            let store = UsearchStore::new(QUERY.len()).expect("create");
+            store
+                .add(&Scope::Root, &[1.0, 0.1, 0.0, 0.0], key("a"))
+                .expect("add a");
+            store
+                .add(&Scope::Root, &[1.0, 0.5, 0.0, 0.0], key("b"))
+                .expect("add b");
+            add_duplicates(&store, "a", 3);
+
+            assert_eq!(
+                recall(&store, &["a", "b"], 4, 2).await,
+                [key("a"), key("b")]
+            );
+        }
+
+        // Widening still ends on an index whose raw keys are all stale and
+        // where no allowed memory is indexed.
+        #[tokio::test]
+        async fn terminates_on_a_fully_stale_index() {
+            let store = UsearchStore::new(QUERY.len()).expect("create");
+            add_unmapped(&store, 6);
+
+            assert!(recall(&store, &["keeper"], 1, 1).await.is_empty());
+        }
+
+        // A size read must not wait on the index mutex: `search_bound` runs on
+        // every widening round of a tag-filtered recall, alongside writers.
+        #[test]
+        fn raw_size_does_not_take_the_index_lock() {
+            let index = std::sync::Arc::new(VectorIndex::<UsearchRawIndex>::new(4).unwrap());
+            index
+                .add_with_next_key(&[1.0, 0.0, 0.0, 0.0], "a".to_owned())
+                .unwrap();
+            let guard = lock!(index.state);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let reader = std::sync::Arc::clone(&index);
+            std::thread::spawn(move || {
+                let _ = tx.send(reader.raw_size());
+            });
+            let size = rx.recv_timeout(std::time::Duration::from_secs(2));
+            drop(guard);
+            assert_eq!(size, Ok(1), "raw_size blocked on the held index lock");
+        }
+
+        // The published size tracks `index.size()` through every mutation path,
+        // including a failed add and a rollback, where the key map and the raw
+        // index can disagree.
+        #[test]
+        fn raw_size_tracks_the_index_through_failures_and_rollback() {
+            let check = |idx: &VectorIndex<FailingRawIndex>| {
+                assert_eq!(idx.raw_size(), lock!(idx.state).index.size());
+            };
+            let idx = make_failing_index(4, FailOn::Add, 2);
+            let k0 = idx
+                .add_with_next_key(&[1.0, 0.0, 0.0, 0.0], "a".to_owned())
+                .unwrap();
+            check(&idx);
+            let k1 = idx
+                .add_with_next_key(&[0.0, 1.0, 0.0, 0.0], "b".to_owned())
+                .unwrap();
+            check(&idx);
+            assert!(idx
+                .add_with_next_key(&[0.0, 0.0, 1.0, 0.0], "c".to_owned())
+                .is_err());
+            check(&idx);
+            idx.rollback_add(k1, None, "b");
+            check(&idx);
+            idx.remove(k0).unwrap();
+            check(&idx);
+            assert_eq!(idx.raw_size(), 0);
+        }
+
+        // usearch does not promise that a failed add or remove leaves the
+        // index untouched. When the backend mutates and then errors, the
+        // published size must still follow the index, which only the
+        // error-path refresh guarantees.
+        #[test]
+        fn raw_size_tracks_a_backend_that_mutates_then_fails() {
+            let check = |idx: &VectorIndex<FailingRawIndex>| {
+                assert_eq!(idx.raw_size(), lock!(idx.state).index.size());
+            };
+            let adds = make_failing_index(4, FailOn::AddAfterMutating, 1);
+            adds.add_with_next_key(&[1.0, 0.0, 0.0, 0.0], "a".to_owned())
+                .unwrap();
+            assert!(adds
+                .add_with_next_key(&[0.0, 1.0, 0.0, 0.0], "b".to_owned())
+                .is_err());
+            check(&adds);
+            assert_eq!(adds.raw_size(), 2, "the failed add still landed");
+
+            let removes = make_failing_index(4, FailOn::RemoveAfterMutating, 0);
+            removes
+                .add_with_next_key(&[1.0, 0.0, 0.0, 0.0], "a".to_owned())
+                .unwrap();
+            let key = removes.find_key_by_name("a").expect("key");
+            assert!(removes.remove(key).is_err());
+            check(&removes);
+            assert_eq!(removes.raw_size(), 0, "the failed remove still landed");
+        }
+
+        // The bound counts raw keys the key map lost, and a subtree bound
+        // sums its scope indexes: a subtree search cuts the merged hits to
+        // `limit`, so the largest single index would truncate real hits.
+        #[test]
+        fn search_bound_counts_unmapped_keys_and_sums_subtree_indexes() {
+            let store = UsearchStore::new(QUERY.len()).expect("create");
+            let scope = |path: &str| Scope::Path(ScopePath::new(path).expect("scope"));
+            for (scope, name) in [
+                (Scope::Root, "root"),
+                (scope("org/a"), "a1"),
+                (scope("org/a"), "a2"),
+                (scope("org/b"), "b1"),
+                (scope("other"), "o1"),
+            ] {
+                let qualified =
+                    MemoryRef::new(scope.clone(), MemoryName::new(name.to_string()).unwrap())
+                        .qualified_path();
+                store.add(&scope, &QUERY, qualified).expect("add");
+            }
+            add_unmapped(&store, 3);
+
+            assert_eq!(store.search_bound(&ScopeFilter::All), 8);
+            assert_eq!(store.search_bound(&ScopeFilter::RootOnly), 1);
+            let org = ScopeFilter::Subtree(ScopePath::new("org").expect("scope"));
+            assert_eq!(store.search_bound(&org), 4);
+        }
     }
 }
