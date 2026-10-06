@@ -286,7 +286,7 @@ impl MemoryRepo {
             let markdown = memory.to_markdown()?;
             arc.write_memory_file(&file_path, markdown.as_bytes())?;
 
-            let mut index = repo.index()?;
+            let mut index = arc.index_from_head(&repo)?;
             arc.stage_add(&mut index, &file_path)?;
             let oid = arc.commit_index(
                 &repo,
@@ -333,7 +333,7 @@ impl MemoryRepo {
 
             std::fs::remove_file(&file_path_clone)?;
 
-            let mut index = repo.index()?;
+            let mut index = arc.index_from_head(&repo)?;
             arc.stage_remove(&mut index, &file_path_clone)?;
             let oid = arc.commit_index(
                 &repo,
@@ -422,7 +422,7 @@ impl MemoryRepo {
                 arc.write_memory_file(&dest_path, markdown.as_bytes())?;
                 std::fs::remove_file(&source_path)?;
 
-                let mut index = repo.index()?;
+                let mut index = arc.index_from_head(&repo)?;
                 arc.stage_add(&mut index, &dest_path)?;
                 arc.stage_remove(&mut index, &source_path)?;
                 arc.commit_index(
@@ -1284,6 +1284,49 @@ impl MemoryRepo {
         Ok(sig)
     }
 
+    /// Return an index whose contents match the repository's current HEAD tree.
+    ///
+    /// `MemoryRepo` holds one `Repository` for the process lifetime, and
+    /// libgit2 caches the index it hands back. Nothing re-reads it, so a
+    /// commit made outside pali leaves the cached index describing a tree
+    /// that predates that commit. Committing from the stale index writes it
+    /// back over `.git/index` and builds a tree from it, producing a commit
+    /// that presents as a wholesale revert of the external writer's work with
+    /// one file added on top. The working tree stays correct throughout,
+    /// which is why it can go unnoticed for weeks — only HEAD is wrong.
+    ///
+    /// Basing the index on HEAD instead means a pali commit always says
+    /// "HEAD, plus exactly what I staged," no matter who else has written.
+    ///
+    /// This is deliberately *not* fail-closed on divergence: a memory store
+    /// must not answer confusion by declining to remember.
+    ///
+    /// Only the index is reset — the working tree is untouched, so staging a
+    /// path afterwards still picks up the file on disk. One consequence:
+    /// anything an outside writer has staged but not yet committed is
+    /// unstaged by the next pali write (the file stays on disk, and it was
+    /// also lost by the cached-index code before #365).
+    fn index_from_head(&self, repo: &Repository) -> Result<git2::Index, MemoryError> {
+        let mut index = repo.index()?;
+        match repo.head() {
+            Ok(head) => {
+                let tree = head.peel_to_tree()?;
+                index.read_tree(&tree)?;
+            }
+            Err(e) if e.code() == ErrorCode::UnbornBranch || e.code() == ErrorCode::NotFound => {
+                // No tree to read. `init_or_open` always makes a first
+                // commit, so the reachable case is a branch ref removed
+                // from outside, not a fresh repo. Clearing here would make
+                // the next commit a root holding one file. Fall back to the
+                // freshest record of what is tracked, the on-disk index,
+                // so this path never remembers less than it did before #365.
+                index.read(true)?;
+            }
+            Err(e) => return Err(MemoryError::Git(e)),
+        }
+        Ok(index)
+    }
+
     /// Commit the current index state and return the new commit's `Oid`.
     fn commit_index(
         &self,
@@ -1527,7 +1570,7 @@ impl MemoryRepo {
 mod tests {
     use super::*;
     use crate::auth::AuthProvider;
-    use crate::types::{Memory, MemoryMetadata, PullResult, Scope};
+    use crate::types::{Memory, MemoryMetadata, PullResult, Scope, ScopePath};
     use std::sync::Arc;
 
     fn test_auth() -> AuthProvider {
@@ -1554,6 +1597,265 @@ mod tests {
 
     fn open_repo(dir: &tempfile::TempDir, remote_url: Option<&str>) -> Arc<MemoryRepo> {
         Arc::new(MemoryRepo::init_or_open(dir.path(), remote_url).expect("failed to init repo"))
+    }
+
+    // -- #365: cached index must not revert an external writer -------------
+
+    /// Commit a file directly with git2, bypassing `MemoryRepo` entirely —
+    /// the way a human running `git commit` in the memories checkout does.
+    fn commit_out_of_band(dir: &tempfile::TempDir, filename: &str, body: &str) {
+        let repo = git2::Repository::open(dir.path()).expect("open for out-of-band write");
+        std::fs::write(dir.path().join(filename), body).expect("write out-of-band file");
+
+        let mut index = repo.index().expect("index");
+        index
+            .add_path(std::path::Path::new(filename))
+            .expect("stage out-of-band file");
+        index.write().expect("write index");
+        let tree_oid = index.write_tree().expect("write_tree");
+        let tree = repo.find_tree(tree_oid).expect("find_tree");
+        let sig = git2::Signature::now("outsider", "outsider@example.invalid").unwrap();
+        let parent = repo
+            .head()
+            .expect("head")
+            .peel_to_commit()
+            .expect("peel to commit");
+        repo.commit(
+            Some("HEAD"),
+            &sig,
+            &sig,
+            "out-of-band commit",
+            &tree,
+            &[&parent],
+        )
+        .expect("commit out-of-band");
+    }
+
+    /// True if `filename` is present in the repository's current HEAD tree.
+    fn in_head_tree(dir: &tempfile::TempDir, filename: &str) -> bool {
+        let repo = git2::Repository::open(dir.path()).expect("open for tree check");
+        let head = repo.head().expect("head");
+        let tree = head.peel_to_tree().expect("peel to tree");
+        let found = tree.get_name(filename).is_some();
+        drop(tree);
+        found
+    }
+
+    #[tokio::test]
+    async fn save_after_external_commit_does_not_revert_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = open_repo(&dir, None);
+
+        // A save through the API, so the cached index is populated and warm.
+        repo.save_memory(&make_memory("first", "one", 1_700_000_100))
+            .await
+            .expect("first save");
+
+        // Someone else commits, without going through pali.
+        commit_out_of_band(&dir, "outsider.md", "not pali's file\n");
+        assert!(in_head_tree(&dir, "outsider.md"), "precondition");
+
+        // A second save must add its file WITHOUT deleting the outsider's.
+        repo.save_memory(&make_memory("second", "two", 1_700_000_200))
+            .await
+            .expect("second save");
+
+        assert!(
+            in_head_tree(&dir, "outsider.md"),
+            "#365: save_memory built its tree from a stale cached index and \
+             reverted a commit made outside pali"
+        );
+        repo.read_memory("first", &Scope::Root)
+            .await
+            .expect("earlier memory still present");
+        repo.read_memory("second", &Scope::Root)
+            .await
+            .expect("new memory written");
+    }
+
+    #[tokio::test]
+    async fn delete_after_external_commit_does_not_revert_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = open_repo(&dir, None);
+
+        repo.save_memory(&make_memory("doomed", "bye", 1_700_000_100))
+            .await
+            .expect("save");
+
+        commit_out_of_band(&dir, "outsider.md", "not pali's file\n");
+
+        repo.delete_memory("doomed", &Scope::Root)
+            .await
+            .expect("delete");
+
+        assert!(
+            in_head_tree(&dir, "outsider.md"),
+            "#365: delete_memory reverted an out-of-band commit"
+        );
+        assert!(
+            repo.read_memory("doomed", &Scope::Root).await.is_err(),
+            "the delete itself must still take effect"
+        );
+    }
+
+    #[tokio::test]
+    async fn move_after_external_commit_does_not_revert_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = open_repo(&dir, None);
+
+        repo.save_memory(&make_memory("travelling", "here", 1_700_000_100))
+            .await
+            .expect("save");
+
+        commit_out_of_band(&dir, "outsider.md", "not pali's file\n");
+
+        let dest_name: MemoryName = "travelling".parse().expect("valid memory name");
+        let dest_scope = Scope::Path(ScopePath::new("elsewhere").expect("valid scope path"));
+        repo.move_memory("travelling", &Scope::Root, &dest_name, &dest_scope)
+            .await
+            .expect("move");
+
+        assert!(
+            in_head_tree(&dir, "outsider.md"),
+            "#365: move_memory reverted an out-of-band commit"
+        );
+        repo.read_memory("travelling", &dest_scope)
+            .await
+            .expect("the move itself must still take effect: memory at destination");
+        assert!(
+            repo.read_memory("travelling", &Scope::Root).await.is_err(),
+            "the move itself must still take effect: source removed"
+        );
+    }
+
+    /// Path of `name` in the root scope, relative to the repository root.
+    fn root_rel_path(repo: &MemoryRepo, name: &str) -> std::path::PathBuf {
+        repo.memory_path(name, &Scope::Root)
+            .strip_prefix(&repo.root)
+            .expect("memory path is inside the repo")
+            .to_path_buf()
+    }
+
+    /// The harm #365 actually reported: an outside commit that deletes one of
+    /// pali's files and edits another must survive the next save, along with
+    /// an outside add — no resurrected deletion, no reverted edit.
+    #[tokio::test]
+    async fn save_after_external_delete_and_edit_does_not_revert_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = open_repo(&dir, None);
+
+        repo.save_memory(&make_memory("keep", "one", 1_700_000_100))
+            .await
+            .expect("save keep");
+        repo.save_memory(&make_memory("gone", "two", 1_700_000_200))
+            .await
+            .expect("save gone");
+
+        let keep_rel = root_rel_path(&repo, "keep");
+        let gone_rel = root_rel_path(&repo, "gone");
+        let edited = b"edited outside pali\n";
+
+        // One outside commit: edit `keep`, delete `gone`, add `outsider.md`.
+        {
+            let outside = git2::Repository::open(dir.path()).expect("open outside");
+            let mut index = outside.index().expect("index");
+            std::fs::write(dir.path().join(&keep_rel), edited).expect("edit keep");
+            index.add_path(&keep_rel).expect("stage edit");
+            std::fs::remove_file(dir.path().join(&gone_rel)).expect("delete gone");
+            index.remove_path(&gone_rel).expect("stage delete");
+            std::fs::write(dir.path().join("outsider.md"), "not pali's file\n").expect("add");
+            index
+                .add_path(std::path::Path::new("outsider.md"))
+                .expect("stage add");
+            index.write().expect("write index");
+            let tree = outside
+                .find_tree(index.write_tree().expect("write_tree"))
+                .expect("find_tree");
+            let sig = git2::Signature::now("outsider", "outsider@example.invalid").unwrap();
+            let parent = outside.head().unwrap().peel_to_commit().unwrap();
+            outside
+                .commit(Some("HEAD"), &sig, &sig, "outside", &tree, &[&parent])
+                .expect("outside commit");
+        }
+
+        repo.save_memory(&make_memory("third", "three", 1_700_000_300))
+            .await
+            .expect("save third");
+
+        let git = git2::Repository::open(dir.path()).expect("open for checks");
+        let tree = git.head().unwrap().peel_to_tree().unwrap();
+        assert!(
+            tree.get_path(std::path::Path::new("outsider.md")).is_ok(),
+            "#365: outside add reverted"
+        );
+        assert!(
+            tree.get_path(&gone_rel).is_err(),
+            "#365: outside delete reverted (file resurrected in HEAD)"
+        );
+        let keep_blob = git
+            .find_blob(tree.get_path(&keep_rel).expect("keep in HEAD").id())
+            .unwrap();
+        assert_eq!(
+            keep_blob.content(),
+            edited,
+            "#365: outside edit reverted in HEAD"
+        );
+        assert!(
+            tree.get_path(&root_rel_path(&repo, "third")).is_ok(),
+            "the save itself must still take effect"
+        );
+        assert_eq!(
+            git.diff_tree_to_index(Some(&tree), None, None)
+                .unwrap()
+                .deltas()
+                .len(),
+            0,
+            "on-disk index differs from HEAD after the save"
+        );
+        assert_eq!(
+            git.diff_index_to_workdir(None, None)
+                .unwrap()
+                .deltas()
+                .len(),
+            0,
+            "working tree differs from the index after the save"
+        );
+    }
+
+    /// A branch ref removed from outside leaves HEAD unborn. The next save
+    /// must not commit a root that holds only its own file: the memories
+    /// already tracked have to be in that commit too.
+    #[tokio::test]
+    async fn save_after_branch_ref_removed_keeps_tracked_memories() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = open_repo(&dir, None);
+
+        repo.save_memory(&make_memory("first", "one", 1_700_000_100))
+            .await
+            .expect("first save");
+
+        {
+            let outside = git2::Repository::open(dir.path()).expect("open outside");
+            let mut branch = outside.head().expect("head").resolve().expect("resolve");
+            branch.delete().expect("delete branch ref");
+            assert!(outside.head().is_err(), "precondition: HEAD is unborn");
+        }
+
+        repo.save_memory(&make_memory("second", "two", 1_700_000_200))
+            .await
+            .expect("second save");
+
+        let git = git2::Repository::open(dir.path()).expect("open for checks");
+        let tree = git.head().unwrap().peel_to_tree().unwrap();
+        assert!(
+            tree.get_path(&root_rel_path(&repo, "second")).is_ok(),
+            "the save itself must take effect"
+        );
+        assert!(
+            tree.get_path(&root_rel_path(&repo, "first")).is_ok(),
+            "an unborn HEAD cleared the index: the new root commit dropped \
+             every memory already tracked"
+        );
     }
 
     // -- redact_url tests --------------------------------------------------

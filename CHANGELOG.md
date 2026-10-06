@@ -17,6 +17,32 @@
   memory's full body. The 24 KiB page cap still applies; oversized pages split
   across `next_cursor` instead of truncating bodies.
 
+### Fixed
+
+- **A commit made outside Pali is no longer silently reverted (#365).** `MemoryRepo`
+  holds one `Repository` for the process lifetime and libgit2 caches the index it
+  returns; nothing re-read it, so a commit made out-of-band left the cached index
+  describing a tree that predated it. The next `save`, `delete`, or `move` wrote that
+  stale index back over `.git/index`, built its tree from it, and parented the result
+  on current HEAD — producing a commit that reads as a wholesale revert of the external
+  writer's work with one file added on top. Observed in the wild as a `save memory`
+  commit that did `25 files changed, 217 insertions(+), 679 deletions(-)`. The working
+  tree stayed correct throughout, so only the repository history was wrong, which is why
+  it can go unnoticed for weeks. Write paths now base their index on the current HEAD
+  tree, so a Pali commit is always "HEAD, plus exactly what Pali staged." Changes an
+  outside writer has staged but not committed are therefore unstaged by the next Pali
+  write; the files stay on disk, and the old code unstaged them too. Not
+  fail-closed on divergence: a memory store must not answer confusion by declining to
+  remember. Merge handling is unchanged — a merge index is supposed to differ from HEAD.
+
+  **Upgrading stops new damage; it does not repair a store that was already hit.** In
+  such a store HEAD still lacks the external writer's changes: files the bad commit
+  dropped are untracked on disk, its reverted edits show as modified, and files it
+  resurrected show as deleted. Pali does not detect or re-add any of this. Because the
+  working tree stayed correct, `git status` in the memory checkout lists exactly that
+  drift; once you have checked that nothing else is in flight there, stop Pali, run
+  `git add -A && git commit`, and HEAD matches the working tree again.
+
 ## [0.19.0] - 2026-08-27
 
 ### Behavior changes — read before upgrading
