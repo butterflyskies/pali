@@ -37,6 +37,58 @@ impl FusedHit {
     }
 }
 
+/// Which retrieval strategy produced a [`RankedList`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MatchSource {
+    /// Embedding similarity; hit values are cosine distances (ascending).
+    Semantic,
+    /// BM25 keyword search; hit values are BM25 scores (descending).
+    Lexical,
+}
+
+/// One hit in a [`RankedList`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RankedHit {
+    /// Canonical index key (`v1:scope=<scope>;name=<name>`).
+    pub(crate) qualified_name: String,
+    /// The strategy's own measure for the hit (see [`MatchSource`]).
+    pub(crate) value: f32,
+}
+
+impl RankedHit {
+    pub(crate) fn new(qualified_name: String, value: f32) -> Self {
+        Self {
+            qualified_name,
+            value,
+        }
+    }
+}
+
+/// One retrieval strategy's hits for a query, best first.
+///
+/// Fusion uses only the list positions; each hit's value is carried
+/// through to the [`FusedHit`] fields.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RankedList {
+    /// The strategy that produced the hits.
+    pub(crate) source: MatchSource,
+    /// Hits, best first.
+    pub(crate) hits: Vec<RankedHit>,
+}
+
+impl RankedList {
+    /// Build a list from `(qualified_name, value)` pairs, best first.
+    pub(crate) fn from_pairs(source: MatchSource, pairs: Vec<(String, f32)>) -> Self {
+        Self {
+            source,
+            hits: pairs
+                .into_iter()
+                .map(|(qualified_name, value)| RankedHit::new(qualified_name, value))
+                .collect(),
+        }
+    }
+}
+
 /// Merge a semantic result list (ascending distance) and a lexical result
 /// list (descending BM25 score) into a single ranking via reciprocal rank
 /// fusion.
@@ -53,34 +105,61 @@ pub fn reciprocal_rank_fusion(
     lexical: &[(String, f32)],
     limit: usize,
 ) -> Vec<FusedHit> {
+    fuse(
+        &[
+            RankedList::from_pairs(MatchSource::Semantic, semantic.to_vec()),
+            RankedList::from_pairs(MatchSource::Lexical, lexical.to_vec()),
+        ],
+        limit,
+    )
+}
+
+/// Merge ranked lists into a single ranking via reciprocal rank fusion.
+///
+/// Each list contributes `1 / (K + rank + 1)` to every hit it contains and
+/// fills that hit's field for its [`MatchSource`]. A name that appears more
+/// than once in a list keeps its first (best) rank and value. At most one
+/// list may carry each source: a second list of the same source would only
+/// half-merge (its ranks would count for names the first list lacked and be
+/// dropped for the rest), so this is checked with a `debug_assert!`.
+/// Ordering and tie-breaking are as documented on
+/// [`reciprocal_rank_fusion`]. At most `limit` hits are returned.
+pub(crate) fn fuse(lists: &[RankedList], limit: usize) -> Vec<FusedHit> {
+    debug_assert!(
+        lists.iter().enumerate().all(|(i, list)| lists[..i]
+            .iter()
+            .all(|earlier| earlier.source != list.source)),
+        "fuse() takes at most one list per source"
+    );
+
     let mut merged: HashMap<&str, FusedHit> = HashMap::new();
 
-    for (rank, (qualified_name, distance)) in semantic.iter().enumerate() {
-        merged
-            .entry(qualified_name.as_str())
-            .or_insert_with(|| FusedHit {
-                qualified_name: qualified_name.clone(),
-                semantic_distance: Some(*distance),
-                lexical_score: None,
-                score: rrf_contribution(rank),
-            });
-    }
-
-    for (rank, (qualified_name, bm25)) in lexical.iter().enumerate() {
-        merged
-            .entry(qualified_name.as_str())
-            .and_modify(|hit| {
-                if hit.lexical_score.is_none() {
-                    hit.lexical_score = Some(*bm25);
-                    hit.score += rrf_contribution(rank);
-                }
-            })
-            .or_insert_with(|| FusedHit {
-                qualified_name: qualified_name.clone(),
-                semantic_distance: None,
-                lexical_score: Some(*bm25),
-                score: rrf_contribution(rank),
-            });
+    for list in lists {
+        for (
+            rank,
+            RankedHit {
+                qualified_name,
+                value,
+            },
+        ) in list.hits.iter().enumerate()
+        {
+            let hit = merged
+                .entry(qualified_name.as_str())
+                .or_insert_with(|| FusedHit {
+                    qualified_name: qualified_name.clone(),
+                    semantic_distance: None,
+                    lexical_score: None,
+                    score: 0.0,
+                });
+            let slot = match list.source {
+                MatchSource::Semantic => &mut hit.semantic_distance,
+                MatchSource::Lexical => &mut hit.lexical_score,
+            };
+            if slot.is_none() {
+                *slot = Some(*value);
+                hit.score += rrf_contribution(rank);
+            }
+        }
     }
 
     let mut hits: Vec<FusedHit> = merged.into_values().collect();
@@ -193,6 +272,14 @@ mod tests {
     #[test]
     fn empty_inputs_produce_empty_output() {
         assert!(reciprocal_rank_fusion(&[], &[], 10).is_empty());
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "at most one list per source")]
+    fn fuse_rejects_two_lists_with_the_same_source() {
+        let list = || RankedList::from_pairs(MatchSource::Semantic, sem(&[("a", 0.1)]));
+        let _ = fuse(&[list(), list()], 10);
     }
 
     #[test]

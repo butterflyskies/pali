@@ -25,9 +25,14 @@ use crate::{
 pub mod bm25;
 /// Reciprocal rank fusion for merging result lists.
 pub mod fusion;
+#[cfg(test)]
+mod hybrid_oracle_test;
+mod strategy;
 
 pub use bm25::{LexicalDoc, LexicalIndex, LexicalOp, LexicalStatus};
+use fusion::fuse;
 pub use fusion::{reciprocal_rank_fusion, FusedHit};
+use strategy::{LexicalStrategy, RetrievalStrategy, SemanticStrategy};
 
 /// Run semantic and lexical retrieval in parallel and merge the ranked
 /// lists with reciprocal rank fusion.
@@ -161,58 +166,22 @@ pub(crate) async fn hybrid_search_within(
         if allowed.is_some_and(|allowed| allowed.names.is_empty()) {
             return Ok(Vec::new());
         }
-        let semantic_fut = async {
-            let start = std::time::Instant::now();
-            let query_vector = embedding.embed_one(query).await?;
-            info!(embed_ms = start.elapsed().as_millis(), "query embedded");
+        let semantic = SemanticStrategy::new(embedding, index);
+        let lexical = LexicalStrategy::new(Arc::clone(lexical));
+        let (semantic, lexical) = tokio::join!(
+            semantic.retrieve(filter, query, limit, allowed),
+            lexical.retrieve(filter, query, limit, allowed),
+        );
 
-            let start = std::time::Instant::now();
-            let search = |fetch| {
-                index.search(filter, &query_vector, fetch).map(|hits| {
-                    hits.into_iter()
-                        .map(|(_key, qualified_name, distance)| (qualified_name, distance))
-                        .collect::<Vec<_>>()
-                })
-            };
-            let bound = || index.search_bound(filter);
-            let results = rank_candidates(allowed, limit, search, bound)?;
-            info!(
-                search_ms = start.elapsed().as_millis(),
-                candidates = results.len(),
-                "semantic index searched"
-            );
-            Ok::<_, MemoryError>(results)
-        };
+        // A semantic failure fails recall. The lexical strategy degrades its
+        // own failures to an empty list.
+        let semantic = semantic?;
+        let lexical = lexical?;
 
-        let lexical_index = Arc::clone(lexical);
-        let lexical_filter = filter.clone();
-        let lexical_query = query.to_string();
-        let lexical_allowed = allowed.cloned();
-        let lexical_fut = traced_spawn_blocking(move || {
-            let search = |fetch| lexical_index.search(&lexical_filter, &lexical_query, fetch);
-            let bound = || lexical_index.search_bound();
-            rank_candidates(lexical_allowed.as_ref(), limit, search, bound)
-        });
+        tracing::Span::current().record("semantic_candidates", semantic.hits.len());
+        tracing::Span::current().record("lexical_candidates", lexical.hits.len());
 
-        let (semantic_result, lexical_result) = tokio::join!(semantic_fut, lexical_fut);
-
-        let semantic = semantic_result?;
-        let lexical: Vec<(String, f32)> = match lexical_result {
-            Ok(Ok(hits)) => hits,
-            Ok(Err(e)) => {
-                warn!(error = %e, "lexical search failed — returning semantic results only");
-                Vec::new()
-            }
-            Err(e) => {
-                warn!(error = %e, "lexical search task failed — returning semantic results only");
-                Vec::new()
-            }
-        };
-
-        tracing::Span::current().record("semantic_candidates", semantic.len());
-        tracing::Span::current().record("lexical_candidates", lexical.len());
-
-        Ok(reciprocal_rank_fusion(&semantic, &lexical, limit))
+        Ok(fuse(&[semantic, lexical], limit))
     }
     .instrument(span)
     .await
@@ -513,6 +482,58 @@ mod tests {
         .await
         .expect("an empty allow-list short-circuits before embedding");
         assert!(hits.is_empty());
+    }
+
+    // Pins the fused order end to end: agreement between strategies ranks
+    // first, then the RRF tie between semantic rank 1 (`b`) and lexical rank
+    // 1 (`d`) resolves lexical-first. A change to fusion order, tie-breaking,
+    // or which strategy fills which field turns this red.
+    #[tokio::test]
+    async fn fused_order_and_match_types_are_pinned() {
+        let store = InMemoryStore::new(DIMS);
+        for (name, vector) in [
+            ("a", [1.0, 0.0, 0.0, 0.0]),
+            ("b", [1.0, 1.0, 0.0, 0.0]),
+            ("c", [0.0, 1.0, 0.0, 0.0]),
+        ] {
+            store.add(&Scope::Root, &vector, key(name)).expect("add");
+        }
+        let lexical = Arc::new(LexicalIndex::new());
+        for (name, content) in [
+            ("a", "quokka"),
+            ("b", "quokka"),
+            ("c", "zebra"),
+            ("d", "zebra"),
+        ] {
+            lexical.upsert(&key(name), name, content).expect("upsert");
+        }
+
+        let hits = hybrid_search(
+            &FixedQueryEmbedding,
+            &store,
+            &lexical,
+            &ScopeFilter::RootOnly,
+            "zebra",
+            10,
+        )
+        .await
+        .expect("search");
+
+        let observed: Vec<_> = hits
+            .iter()
+            .map(|hit| (hit.qualified_name.clone(), hit.match_type()))
+            .collect();
+        assert_eq!(
+            observed,
+            [
+                (key("c"), "both"),
+                (key("a"), "semantic"),
+                (key("d"), "lexical"),
+                (key("b"), "semantic"),
+            ]
+        );
+        assert_eq!(hits[1].semantic_distance, Some(0.0));
+        assert_eq!(hits[2].semantic_distance, None);
     }
 
     fn add_decoys(store: &InMemoryStore, count: u8) {

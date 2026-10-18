@@ -91,6 +91,8 @@ best fact per parent** before result limits apply, so a long memory
 cannot flood the result list with its own chunks. Slice 6 implements
 this with bounded overfetch.
 
+Under an evaluation whose pass rule was fixed before scoring, the whole-memory + chunk (W+C) RRF arm does not go into recall (on set C the fused variant's top-5 recall dropped by 0.110, 95% CI [−0.180, −0.050], on the before-cut half and was unchanged, +0.000, after the cut); a separate chunk-backed semantic path comes first, and fusion stays a swappable policy.
+
 ### Wire compatibility (additive)
 Existing recall behavior and response fields are unchanged. When chunk
 retrieval is wired (slice 7), recall hits additively gain matched-chunk
