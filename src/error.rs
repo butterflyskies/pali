@@ -75,9 +75,13 @@ pub enum MemoryError {
     #[error("token storage error: {0}")]
     TokenStorage(String),
 
-    /// YAML serialisation or deserialisation failed.
+    /// YAML deserialisation failed.
     #[error("yaml error: {0}")]
-    Yaml(#[from] serde_yaml_ng::Error),
+    Yaml(#[from] serde_saphyr::Error),
+
+    /// YAML serialisation failed.
+    #[error("yaml error: {0}")]
+    YamlSerialization(#[from] serde_saphyr::ser_error::Error),
 
     /// The remote server rejected one or more ref updates during push.
     #[error("push rejected: {0}")]

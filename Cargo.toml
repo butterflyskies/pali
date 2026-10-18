@@ -32,8 +32,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 toml = "0.8"
-# Maintained fork of deprecated serde_yaml (dtolnay archived the original).
-serde_yaml_ng = "0.10"
+# Pure-Rust YAML parsing; avoids unsafe-libyaml in memory frontmatter.
+serde-saphyr = "0.0.29"
 # Disable default features to trim unused chrono subsystems; clock provides
 # Utc::now(), serde provides DateTime serialisation — that's all we use.
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
@@ -76,8 +76,8 @@ ureq = { version = "2", features = ["native-certs"], optional = true }
 # Optional dependencies gated behind features.
 # Disable defaults to avoid pulling in native-tls; rustls-tls matches the rest
 # of the crate's TLS strategy. Only the client feature is needed (no runtime).
-kube = { version = "3.1", default-features = false, features = ["client", "rustls-tls"], optional = true }
-k8s-openapi = { version = "0.27", features = ["v1_31"], optional = true }
+kube = { version = "4.2", default-features = false, features = ["client", "rustls-tls"], optional = true }
+k8s-openapi = { version = "0.28", features = ["v1_32"], optional = true }
 secrecy = "0.10.3"
 
 # OpenTelemetry OTLP export (feature = "otlp"). All four crates must be pinned

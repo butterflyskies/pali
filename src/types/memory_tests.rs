@@ -155,6 +155,100 @@ fn round_trip_no_source() {
 }
 
 #[test]
+fn legacy_frontmatter_preserves_metadata_and_body_after_rewrite() {
+    let raw = r#"---
+id: 550e8400-e29b-41d4-a716-446655440000
+name: legacy-memory
+tags:
+  - 'on'
+  - 'null'
+  - '123'
+  - 'tag: value # literal'
+scope:
+  type: Project
+  name: org/team
+created_at: 2023-11-14T22:13:20Z
+updated_at: 2023-11-14T22:15:00Z
+source: 'import: "old" # literal'
+---
+
+# Héllo
+
+Body: on/null # not YAML
+"#;
+    let memory = Memory::from_markdown(raw).unwrap();
+    assert_eq!(memory.id, "550e8400-e29b-41d4-a716-446655440000");
+    assert_eq!(memory.name.as_str(), "legacy-memory");
+    assert_eq!(memory.metadata.scope, path("org/team"));
+    assert_eq!(
+        memory.metadata.tags,
+        ["on", "null", "123", "tag: value # literal"]
+    );
+    assert_eq!(memory.metadata.created_at.timestamp(), 1_700_000_000);
+    assert_eq!(memory.metadata.updated_at.timestamp(), 1_700_000_100);
+    assert_eq!(
+        memory.metadata.source.as_deref(),
+        Some("import: \"old\" # literal")
+    );
+    assert_eq!(memory.content, "# Héllo\n\nBody: on/null # not YAML\n");
+
+    let rewritten = Memory::from_markdown(&memory.to_markdown().unwrap()).unwrap();
+    assert_eq!(rewritten.id, memory.id);
+    assert_eq!(rewritten.name, memory.name);
+    assert_eq!(rewritten.metadata.tags, memory.metadata.tags);
+    assert_eq!(rewritten.metadata.scope, memory.metadata.scope);
+    assert_eq!(rewritten.metadata.created_at, memory.metadata.created_at);
+    assert_eq!(rewritten.metadata.updated_at, memory.metadata.updated_at);
+    assert_eq!(rewritten.metadata.source, memory.metadata.source);
+    assert_eq!(rewritten.content, memory.content);
+}
+
+fn markdown_with_scope(scope_yaml: &str) -> String {
+    format!(
+        "---\nid: legacy-id\nname: legacy-memory\ntags: []\nscope:\n{scope_yaml}\n\
+         created_at: 2023-11-14T22:13:20Z\nupdated_at: 2023-11-14T22:15:00Z\n\
+         ---\n\nLegacy body.\n"
+    )
+}
+
+#[test]
+fn unquoted_legacy_scope_names_remain_strings() {
+    let names = [
+        "on", "On", "ON", "off", "Off", "OFF", "yes", "Yes", "YES", "no", "No", "NO", "y", "Y",
+        "n", "N", "1_000",
+    ];
+    for scope_type in ["Path", "Project"] {
+        for name in names {
+            let raw = markdown_with_scope(&format!("  type: {scope_type}\n  name: {name}"));
+            let memory = Memory::from_markdown(&raw)
+                .unwrap_or_else(|error| panic!("legacy scope {scope_type}/{name}: {error}"));
+            match &memory.metadata.scope {
+                Scope::Path(scope) => assert_eq!(scope.as_str(), name),
+                Scope::Root => panic!("legacy path scope {scope_type}/{name} became root"),
+            }
+            let rewritten = Memory::from_markdown(&memory.to_markdown().unwrap()).unwrap();
+            assert_eq!(rewritten.metadata.scope, memory.metadata.scope);
+            assert_eq!(rewritten.content, "Legacy body.\n");
+        }
+    }
+}
+
+#[test]
+fn frontmatter_scope_adapter_retains_path_validation() {
+    for scope_type in ["Path", "Project"] {
+        for name in ["..", "../escape", "/absolute", "invalid//path"] {
+            let raw = markdown_with_scope(&format!("  type: {scope_type}\n  name: {name}"));
+            assert!(
+                Memory::from_markdown(&raw).is_err(),
+                "invalid scope {scope_type}/{name} was accepted"
+            );
+        }
+        let missing_name = markdown_with_scope(&format!("  type: {scope_type}"));
+        assert!(Memory::from_markdown(&missing_name).is_err());
+    }
+}
+
+#[test]
 fn from_markdown_missing_frontmatter_fails() {
     let result = Memory::from_markdown("just plain text");
     assert!(result.is_err());

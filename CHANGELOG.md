@@ -19,6 +19,23 @@
 
 ### Fixed
 
+- **TLS dependency security fixes:** update the locked rustls dependency from
+  0.23.45 to 0.23.46, addressing RUSTSEC-2026-0346 through RUSTSEC-2026-0349.
+- **Remove unsafe-libyaml:** replace `serde_yaml_ng` with the pure-Rust
+  `serde-saphyr` parser for memory frontmatter and upgrade optional Kubernetes
+  authentication dependencies to kube 4.2 / k8s-openapi 0.28. The Kubernetes
+  integration now targets Kubernetes 1.32 or newer. YAML formatting may change
+  when a memory is rewritten; existing frontmatter remains the input format.
+  `MemoryError::Yaml` now wraps the parser error, and serialization failures
+  use `MemoryError::YamlSerialization`.
+  Legacy unquoted scope names such as `on`, `yes`, and `1_000` retain their
+  exact string values; scope-path validation still rejects invalid paths.
+- **Scoped ZIP audit exceptions:** RUSTSEC-2026-0367, RUSTSEC-2026-0368, and
+  RUSTSEC-2026-0369 are recorded as unreachable extraction paths, not repaired
+  vulnerabilities. Pali loads safetensors, and Candle's archive APIs do not
+  extract files. Revisit the exceptions if model loading gains extraction or
+  Candle permits the patched ZIP major version.
+
 - **A commit made outside Pali is no longer silently reverted (#365).** `MemoryRepo`
   holds one `Repository` for the process lifetime and libgit2 caches the index it
   returns; nothing re-read it, so a commit made out-of-band left the cached index

@@ -28,3 +28,15 @@ hardcoded to prevent drift with the pod spec.
 Pali 0.19.0 renames the pod environment variable to `PALI_GITHUB_TOKEN`.
 Secret storage, the `token` data key, and the write-only Kubernetes flow are
 unchanged; the former variable name above remains as the historical record.
+
+## Dependency maintenance (2026-10-17)
+
+The optional client uses kube 4.2 and k8s-openapi 0.28, targeting Kubernetes
+1.32 or newer. This removes kube's deprecated `serde_yaml` / `unsafe-libyaml`
+dependency path; Kubernetes 1.31 is no longer within the documented support
+range of this client dependency.
+
+Kube 4.2 uses OS-native certificate verification when no explicit CA is
+configured. Deployments with private cluster CAs should retain their explicit
+kubeconfig CA configuration. Secret creation, conflict-driven replacement,
+and the write-only token-storage boundary are unchanged.

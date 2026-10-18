@@ -12,6 +12,13 @@ ignore = [
     # Transitive deps we can't control — unmaintained, not vulnerable.
     { id = "RUSTSEC-2024-0436", reason = "paste: transitive via thiserror/serde derive macros" },
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile: transitive via rustls-native-certs 0.7 → ureq 2 (native-certs feature)" },
+    # Source-reviewed exception (2026-10-17): these affect ZIP extraction.
+    # Pali loads safetensors; Candle's optional NPZ/PTH code reads archives and
+    # never calls extract(). No published Candle release permits fixed ZIP 9.
+    # Revisit on a model-format/extraction change or when Candle permits ZIP 9.
+    { id = "RUSTSEC-2026-0367", reason = "Candle ZIP dependency: privileged-bit extraction is unreachable from Pali's safetensors loader" },
+    { id = "RUSTSEC-2026-0368", reason = "Candle ZIP dependency: symlink extraction is unreachable from Pali's safetensors loader" },
+    { id = "RUSTSEC-2026-0369", reason = "Candle ZIP dependency: permission updates through extracted symlinks are unreachable from Pali's safetensors loader" },
 ]
 
 # --- Licenses -------------------------------------------------------------

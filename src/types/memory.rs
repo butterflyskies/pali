@@ -272,7 +272,7 @@ impl Memory {
             source: self.metadata.source.as_deref(),
         };
 
-        let yaml = serde_yaml_ng::to_string(&fm)?;
+        let yaml = serde_saphyr::to_string(&fm)?;
         Ok(format!("---\n{}---\n\n{}", yaml, self.content))
     }
 
@@ -296,18 +296,47 @@ impl Memory {
         // +5 = "\n---\n".len(); skip optional leading newline in body
         let body = rest[end_marker + 5..].trim_start_matches('\n');
 
+        // Decode scalar names directly. Internally tagged enums buffer their
+        // fields and can reinterpret legacy unquoted names such as `on`.
+        #[derive(Deserialize)]
+        enum FrontmatterScopeKind {
+            Root,
+            Path,
+            Global,
+            Project,
+        }
+
+        #[derive(Deserialize)]
+        struct FrontmatterScope {
+            #[serde(rename = "type")]
+            kind: FrontmatterScopeKind,
+            name: Option<String>,
+        }
+
         #[derive(Deserialize)]
         struct Frontmatter {
             id: String,
             name: String,
             tags: Vec<String>,
-            scope: Scope,
+            scope: FrontmatterScope,
             created_at: DateTime<Utc>,
             updated_at: DateTime<Utc>,
             source: Option<String>,
         }
 
-        let fm: Frontmatter = serde_yaml_ng::from_str(yaml_str)?;
+        let fm: Frontmatter = serde_saphyr::from_str(yaml_str)?;
+        let scope =
+            match fm.scope.kind {
+                FrontmatterScopeKind::Root | FrontmatterScopeKind::Global => Scope::Root,
+                FrontmatterScopeKind::Path | FrontmatterScopeKind::Project => {
+                    let name = fm.scope.name.ok_or_else(|| {
+                        <serde_saphyr::Error as serde::de::Error>::missing_field("name")
+                    })?;
+                    Scope::Path(ScopePath::new(name).map_err(|error| {
+                        <serde_saphyr::Error as serde::de::Error>::custom(error)
+                    })?)
+                }
+            };
 
         Ok(Memory {
             id: fm.id,
@@ -315,7 +344,7 @@ impl Memory {
             content: body.to_string(),
             metadata: MemoryMetadata {
                 tags: fm.tags,
-                scope: fm.scope,
+                scope,
                 created_at: fm.created_at,
                 updated_at: fm.updated_at,
                 source: fm.source,
