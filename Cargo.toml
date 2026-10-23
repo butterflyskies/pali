@@ -33,7 +33,7 @@ serde_json = "1"
 base64 = "0.22"
 toml = "0.8"
 # Pure-Rust YAML parsing; avoids unsafe-libyaml in memory frontmatter.
-serde-saphyr = "0.0.29"
+serde-saphyr = "2.0.0"
 # Disable default features to trim unused chrono subsystems; clock provides
 # Utc::now(), serde provides DateTime serialisation — that's all we use.
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
