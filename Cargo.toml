@@ -57,7 +57,7 @@ dirs = "6"
 mcp-session = "0.2"
 http = "1"
 arc-swap = "1"
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 
 # Candle direct — pure-Rust BERT inference for embeddings.
 candle-core = "0.10"
