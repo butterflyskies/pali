@@ -76,7 +76,7 @@ ureq = { version = "2", features = ["native-certs"], optional = true }
 # Optional dependencies gated behind features.
 # Disable defaults to avoid pulling in native-tls; rustls-tls matches the rest
 # of the crate's TLS strategy. Only the client feature is needed (no runtime).
-kube = { version = "4.2", default-features = false, features = ["client", "rustls-tls"], optional = true }
+kube = { version = "5.0", default-features = false, features = ["client", "rustls-tls"], optional = true }
 k8s-openapi = { version = "0.28", features = ["v1_32"], optional = true }
 secrecy = "0.10.3"
 
