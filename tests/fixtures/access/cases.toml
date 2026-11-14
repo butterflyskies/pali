@@ -1,0 +1,779 @@
+# Access fixture cases: operation x requester view x inputs.
+#
+# Every name, scope and body in this fixture is fictional.
+#
+# Fields
+#   id              unique case id; also the key in before.json
+#   op              read | recall | list | remember | edit | move | forget
+#   view            the requester view the request expresses with today's
+#                   scope arguments:
+#                     root_only       scope omitted or "global"
+#                                     (ScopeFilter::RootOnly / Scope::Root)
+#                     one_scope       a single Scope::Path (point operations:
+#                                     read, remember, edit, move, forget)
+#                     scope_and_root  ScopeFilter::Subtree over a scope with no
+#                                     child scopes (list, recall)
+#                     several_scopes  ScopeFilter::Subtree over a scope that has
+#                                     child scopes (list, recall)
+#                     all             ScopeFilter::All (list, recall)
+#   principal       fictional requester; not consulted by today's pali
+#   intended_grant  what that principal should be allowed, as
+#                   "<scope>:<rights>" items separated by "; ". Input to the
+#                   after column only; not consulted by today's pali.
+#   after           the proposed outcome. "open" means the policy choice is
+#                   unresolved and no outcome is asserted.
+#   note            what the case probes
+#   Operation inputs, passed to the tool as-is: scope, name, query, limit,
+#   content, tags, tags_all, from_scope, to_scope, new_name.
+#                   tags_all is accepted only on recall and list; on recall
+#                   a non-empty filter goes through the candidate allow-list,
+#                   and fused/BM25 scores are then not recorded.
+#   probe           optional recall run after a write, recorded with it
+#   observe         optional observation projection: the dotted field paths
+#                   of the recorded "before" result that replay compares
+#                   (arrays are transparent, so "hits.name" is every hit's
+#                   name). Omitted means the full record is compared. Every
+#                   path must exist in the observed result. Memory ids,
+#                   timestamps, recall ids, timing metadata, git history and
+#                   raw bodies are never recorded; see before.json
+#                   "never_recorded".
+
+# ---------------------------------------------------------------- read
+
+[[case]]
+id = "read/root-allergen-policy"
+op = "read"
+view = "root_only"
+principal = "Tamsin"
+intended_grant = "root:read; lantern-choir:read,write; tamsin-private:read,write"
+after = "open"
+note = "shared-flavoured half of a duplicate name, scope omitted"
+name = "allergen-policy"
+
+[[case]]
+id = "read/board-allergen-policy-as-board-member"
+op = "read"
+view = "one_scope"
+principal = "Muffet"
+intended_grant = "root:read; bakery-coop:read,write; bakery-coop/board:read,write; muffet-private:read,write"
+after = "open"
+note = "private-flavoured half of a duplicate name, read by a board member"
+name = "allergen-policy"
+scope = "bakery-coop/board"
+
+[[case]]
+id = "read/board-allergen-policy-as-non-member"
+op = "read"
+view = "one_scope"
+principal = "Tamsin"
+intended_grant = "root:read; lantern-choir:read,write; tamsin-private:read,write"
+after = "open"
+note = "same request as the board-member read, from a principal with no board grant"
+name = "allergen-policy"
+scope = "bakery-coop/board"
+
+observe = ["status", "scope", "body_sha256"]
+[[case]]
+id = "read/coop-starter"
+op = "read"
+view = "one_scope"
+principal = "Brannoc"
+intended_grant = "root:read; bakery-coop:read,write; brannoc-private:read,write"
+after = "open"
+note = "shared-flavoured half of a duplicate name"
+name = "sourdough-starter-feeding"
+scope = "bakery-coop"
+
+[[case]]
+id = "read/ottoline-starter-by-brannoc"
+op = "read"
+view = "one_scope"
+principal = "Brannoc"
+intended_grant = "root:read; bakery-coop:read,write; brannoc-private:read,write"
+after = "open"
+note = "another principal's private scope, same name as a shared memory"
+name = "sourdough-starter-feeding"
+scope = "ottoline-private"
+
+[[case]]
+id = "read/scoped-name-without-scope"
+op = "read"
+view = "root_only"
+principal = "Ottoline"
+intended_grant = "root:read,write; bakery-coop:read,write; bakery-coop/board:read,write; ottoline-private:read,write"
+after = "open"
+note = "name exists only in scopes; omitted scope does not fall back"
+name = "sourdough-starter-feeding"
+
+observe = ["status", "code", "message"]
+[[case]]
+id = "read/root-sentinel-explicit-global"
+op = "read"
+view = "root_only"
+principal = "Ottoline"
+intended_grant = "root:read,write; ottoline-private:read,write"
+after = "open"
+note = "scope given as the literal 'global'"
+name = "root-sentinel-ottoline"
+scope = "global"
+
+[[case]]
+id = "read/parent-scope-for-child-memory"
+op = "read"
+view = "one_scope"
+principal = "Ottoline"
+intended_grant = "root:read,write; bakery-coop:read,write; bakery-coop/board:read,write; ottoline-private:read,write"
+after = "open"
+note = "name lives in root and in the child scope, not in the parent"
+name = "allergen-policy"
+scope = "bakery-coop"
+
+[[case]]
+id = "read/segment-boundary-miss"
+op = "read"
+view = "one_scope"
+principal = "Corvane"
+intended_grant = "root:read; bakery-coop:read,write; corvane-private:read,write"
+after = "open"
+note = "memory filed under 'bakery', requested under 'bakery-coop'"
+name = "stray-note"
+scope = "bakery-coop"
+
+[[case]]
+id = "read/segment-boundary-hit"
+op = "read"
+view = "one_scope"
+principal = "Corvane"
+intended_grant = "root:read; bakery-coop:read,write; corvane-private:read,write"
+after = "open"
+note = "memory filed under 'bakery'"
+name = "stray-note"
+scope = "bakery"
+
+[[case]]
+id = "read/brannoc-rota-by-ottoline"
+op = "read"
+view = "one_scope"
+principal = "Ottoline"
+intended_grant = "root:read,write; bakery-coop:read,write; ottoline-private:read,write"
+after = "open"
+note = "private-flavoured half of a duplicate name, read by another principal"
+name = "rota-swaps"
+scope = "brannoc-private"
+
+[[case]]
+id = "read/long-handbook"
+op = "read"
+view = "one_scope"
+principal = "Tamsin"
+intended_grant = "root:read; bakery-coop:read; tamsin-private:read,write"
+after = "open"
+note = "multi-section memory longer than one chunk"
+name = "bread-production-handbook"
+scope = "bakery-coop"
+
+[[case]]
+id = "read/corvane-oven-notes-by-wexley"
+op = "read"
+view = "one_scope"
+principal = "Wexley"
+intended_grant = "root:read,write; wexley-private:read,write"
+after = "open"
+note = "private near-duplicate of a shared memory"
+name = "oven-calibration-notes"
+scope = "corvane-private"
+
+# ---------------------------------------------------------------- recall
+
+[[case]]
+id = "recall/allergen-root-omitted"
+op = "recall"
+view = "root_only"
+principal = "Tamsin"
+intended_grant = "root:read; lantern-choir:read,write; tamsin-private:read,write"
+after = "open"
+note = "duplicate name: only the root half is in view"
+query = "allergen policy sesame roll nut-free tray"
+limit = 10
+
+[[case]]
+id = "recall/allergen-root-global"
+op = "recall"
+view = "root_only"
+principal = "Tamsin"
+intended_grant = "root:read; lantern-choir:read,write; tamsin-private:read,write"
+after = "open"
+note = "same as the omitted-scope recall with scope 'global'"
+query = "allergen policy sesame roll nut-free tray"
+scope = "global"
+limit = 10
+
+[[case]]
+id = "recall/allergen-bakery-subtree"
+op = "recall"
+view = "several_scopes"
+principal = "Tamsin"
+intended_grant = "root:read; bakery-coop:read; tamsin-private:read,write"
+after = "open"
+note = "subtree of bakery-coop reaches the board child scope"
+query = "allergen policy sesame roll nut-free tray"
+scope = "bakery-coop"
+limit = 10
+
+[[case]]
+id = "recall/allergen-all"
+op = "recall"
+view = "all"
+principal = "Tamsin"
+intended_grant = "root:read; lantern-choir:read,write; tamsin-private:read,write"
+after = "open"
+note = "both halves of the duplicate name plus private incident notes"
+query = "allergen policy sesame roll nut-free tray"
+scope = "all"
+limit = 10
+
+[[case]]
+id = "recall/seed-swap-garden"
+op = "recall"
+view = "scope_and_root"
+principal = "Brannoc"
+intended_grant = "root:read; garden-club:read; brannoc-private:read,write"
+after = "open"
+note = "shared half of a duplicate name"
+query = "seed swap list heritage tomatoes beans"
+scope = "garden-club"
+limit = 10
+
+[[case]]
+id = "recall/seed-swap-all"
+op = "recall"
+view = "all"
+principal = "Brannoc"
+intended_grant = "root:read; garden-club:read; brannoc-private:read,write"
+after = "open"
+note = "both halves of a duplicate name"
+query = "seed swap list heritage tomatoes beans"
+scope = "all"
+limit = 10
+
+observe = ["status", "hits.rank", "hits.name", "hits.scope", "hits.snippet_sha256"]
+[[case]]
+id = "recall/starter-ottoline-private"
+op = "recall"
+view = "scope_and_root"
+principal = "Ottoline"
+intended_grant = "root:read,write; ottoline-private:read,write"
+after = "open"
+note = "private half of a duplicate name"
+query = "sourdough starter feeding schedule"
+scope = "ottoline-private"
+limit = 10
+
+[[case]]
+id = "recall/starter-bakery-subtree"
+op = "recall"
+view = "several_scopes"
+principal = "Brannoc"
+intended_grant = "root:read; bakery-coop:read,write; brannoc-private:read,write"
+after = "open"
+note = "shared half of a duplicate name"
+query = "sourdough starter feeding schedule"
+scope = "bakery-coop"
+limit = 10
+
+[[case]]
+id = "recall/oven-all"
+op = "recall"
+view = "all"
+principal = "Wexley"
+intended_grant = "root:read,write; wexley-private:read,write"
+after = "open"
+note = "near-duplicate bodies on both sides of a scope line"
+query = "deck oven two runs hot thermostat dial"
+scope = "all"
+limit = 10
+
+[[case]]
+id = "recall/oven-corvane-private"
+op = "recall"
+view = "scope_and_root"
+principal = "Corvane"
+intended_grant = "root:read; bakery-coop:read,write; corvane-private:read,write"
+after = "open"
+note = "private near-duplicate only"
+query = "deck oven two runs hot thermostat dial"
+scope = "corvane-private"
+limit = 10
+
+[[case]]
+id = "recall/greenhouse-garden"
+op = "recall"
+view = "scope_and_root"
+principal = "Peregrine"
+intended_grant = "root:read; garden-club:read,write; peregrine-private:read,write"
+after = "open"
+note = "shared near-duplicate only"
+query = "greenhouse watering roof vents tomatoes"
+scope = "garden-club"
+limit = 10
+
+[[case]]
+id = "recall/greenhouse-all"
+op = "recall"
+view = "all"
+principal = "Peregrine"
+intended_grant = "root:read; garden-club:read,write; peregrine-private:read,write"
+after = "open"
+note = "near-duplicate bodies on both sides of a scope line"
+query = "greenhouse watering roof vents tomatoes"
+scope = "all"
+limit = 10
+
+[[case]]
+id = "recall/segment-boundary-bakery"
+op = "recall"
+view = "scope_and_root"
+principal = "Corvane"
+intended_grant = "root:read; bakery:read; corvane-private:read,write"
+after = "open"
+note = "subtree 'bakery' must not reach 'bakery-coop'"
+query = "spare proofing baskets loft packaging"
+scope = "bakery"
+limit = 10
+
+[[case]]
+id = "recall/buried-phrase-bakery-subtree"
+op = "recall"
+view = "several_scopes"
+principal = "Tamsin"
+intended_grant = "root:read; bakery-coop:read; tamsin-private:read,write"
+after = "open"
+note = "exact phrase buried mid-way through a long memory"
+query = "blue bowl rule"
+scope = "bakery-coop"
+limit = 10
+
+[[case]]
+id = "recall/sentinel-ottoline-private"
+op = "recall"
+view = "scope_and_root"
+principal = "Ottoline"
+intended_grant = "ottoline-private:read,write"
+after = "open"
+note = "does the root sentinel come back beside the scoped sentinel"
+query = "marrowfat sentinel"
+scope = "ottoline-private"
+limit = 10
+
+observe = ["status", "root_sentinel_returned", "hits.rank", "hits.name", "hits.scope"]
+[[case]]
+id = "recall/sentinel-root-only"
+op = "recall"
+view = "root_only"
+principal = "Ottoline"
+intended_grant = "root:read,write; ottoline-private:read,write"
+after = "open"
+note = "root view of the sentinel pair"
+query = "marrowfat sentinel"
+limit = 10
+
+observe = ["status", "root_sentinel_returned", "hits.rank", "hits.name", "hits.scope"]
+[[case]]
+id = "recall/sentinel-all"
+op = "recall"
+view = "all"
+principal = "Wexley"
+intended_grant = "root:read,write; wexley-private:read,write"
+after = "open"
+note = "all view of the sentinel pair"
+query = "marrowfat sentinel"
+scope = "all"
+limit = 10
+
+observe = ["status", "root_sentinel_returned", "hits.rank", "hits.name", "hits.scope"]
+[[case]]
+id = "recall/flour-price-board"
+op = "recall"
+view = "scope_and_root"
+principal = "Muffet"
+intended_grant = "root:read; bakery-coop:read,write; bakery-coop/board:read,write; muffet-private:read,write"
+after = "open"
+note = "board-only near-duplicate of the shared supplier note"
+query = "flour supplier price negotiated Ferrow Mill"
+scope = "bakery-coop/board"
+limit = 10
+
+[[case]]
+id = "recall/hall-choir"
+op = "recall"
+view = "scope_and_root"
+principal = "Isolde"
+intended_grant = "root:read; lantern-choir:read,write; isolde-private:read,write"
+after = "open"
+note = "near-duplicate bodies: root hall booking and choir rehearsal venue"
+query = "parish hall Tanner Lane key side door urn"
+scope = "lantern-choir"
+limit = 10
+
+[[case]]
+id = "recall/flour-coop-subtree-board-only-tag"
+op = "recall"
+view = "several_scopes"
+principal = "Muffet"
+intended_grant = "root:read; bakery-coop:read,write; bakery-coop/board:read,write; muffet-private:read,write"
+after = "open"
+note = "tag filter through the candidate allow-list: untagged coop notes outrank the one board-only flour note"
+query = "flour supplier sacks delivered price"
+scope = "bakery-coop"
+tags_all = ["board-only"]
+limit = 3
+
+[[case]]
+id = "recall/sourdough-all-private-tag"
+op = "recall"
+view = "all"
+principal = "Wexley"
+intended_grant = "root:read,write; wexley-private:read,write"
+after = "open"
+note = "tag filter across every scope: the shared coop starter note outranks the private copy"
+query = "sourdough starter feeding"
+scope = "all"
+tags_all = ["private"]
+limit = 3
+
+# ---------------------------------------------------------------- list
+
+[[case]]
+id = "list/root-omitted"
+op = "list"
+view = "root_only"
+principal = "Tamsin"
+intended_grant = "root:read; tamsin-private:read,write"
+after = "open"
+note = "scope omitted"
+
+[[case]]
+id = "list/root-global"
+op = "list"
+view = "root_only"
+principal = "Tamsin"
+intended_grant = "root:read; tamsin-private:read,write"
+after = "open"
+note = "scope 'global'"
+scope = "global"
+
+[[case]]
+id = "list/ottoline-private"
+op = "list"
+view = "scope_and_root"
+principal = "Ottoline"
+intended_grant = "ottoline-private:read,write"
+after = "open"
+note = "does the root sentinel come back beside the scoped sentinel"
+scope = "ottoline-private"
+
+observe = ["status", "scopes_returned", "root_sentinel_returned", "items.scope", "items.name"]
+[[case]]
+id = "list/garden-club"
+op = "list"
+view = "scope_and_root"
+principal = "Peregrine"
+intended_grant = "root:read; garden-club:read,write; peregrine-private:read,write"
+after = "open"
+note = "mid-sized scope with no children"
+scope = "garden-club"
+
+[[case]]
+id = "list/bakery-subtree"
+op = "list"
+view = "several_scopes"
+principal = "Brannoc"
+intended_grant = "root:read; bakery-coop:read,write; brannoc-private:read,write"
+after = "open"
+note = "large scope whose subtree includes the board child scope"
+scope = "bakery-coop"
+
+[[case]]
+id = "list/board"
+op = "list"
+view = "scope_and_root"
+principal = "Muffet"
+intended_grant = "root:read; bakery-coop:read,write; bakery-coop/board:read,write; muffet-private:read,write"
+after = "open"
+note = "child scope alone"
+scope = "bakery-coop/board"
+
+[[case]]
+id = "list/segment-boundary-bakery"
+op = "list"
+view = "scope_and_root"
+principal = "Corvane"
+intended_grant = "root:read; bakery:read; corvane-private:read,write"
+after = "open"
+note = "subtree 'bakery' must not reach 'bakery-coop'"
+scope = "bakery"
+
+[[case]]
+id = "list/all"
+op = "list"
+view = "all"
+principal = "Wexley"
+intended_grant = "root:read,write; wexley-private:read,write"
+after = "open"
+note = "every scope, paged"
+scope = "all"
+
+observe = ["status", "count", "scopes_returned", "items.scope", "items.name", "items.body_sha256"]
+[[case]]
+id = "list/all-private-tag"
+op = "list"
+view = "all"
+principal = "Wexley"
+intended_grant = "root:read,write; wexley-private:read,write"
+after = "open"
+note = "tag filter selecting private-flavoured memories across scopes"
+scope = "all"
+tags_all = ["private"]
+
+# ---------------------------------------------------------------- remember
+
+[[case]]
+id = "remember/root-new"
+op = "remember"
+view = "root_only"
+principal = "Wexley"
+intended_grant = "root:read,write; wexley-private:read,write"
+after = "open"
+note = "new name at root"
+name = "bake-sale-poster"
+content = "Poster for the joint bake sale goes up in the hall and the market two weeks ahead."
+tags = ["calendar"]
+
+observe = ["response.status", "state_change.added.scope", "state_change.added.name", "state_change.removed", "state_change.modified"]
+[[case]]
+id = "remember/bakery-new"
+op = "remember"
+view = "one_scope"
+principal = "Corvane"
+intended_grant = "root:read; bakery-coop:read,write; corvane-private:read,write"
+after = "open"
+note = "new name in a large scope"
+scope = "bakery-coop"
+name = "oven-two-replacement-quote"
+content = "Quote received for replacing deck oven two; forwarded to the board for the grant draft."
+tags = ["ovens"]
+
+[[case]]
+id = "remember/duplicate-name-new-scope"
+op = "remember"
+view = "one_scope"
+principal = "Ottoline"
+intended_grant = "root:read,write; ottoline-private:read,write"
+after = "open"
+note = "third copy of a name that exists in root and the board scope"
+scope = "ottoline-private"
+name = "allergen-policy"
+content = "My own reminders on the allergen policy: check tray cards twice on market days."
+tags = ["allergens", "private"]
+probe = { query = "allergen policy tray cards", scope = "all", limit = 10 }
+
+[[case]]
+id = "remember/overwrite-existing"
+op = "remember"
+view = "one_scope"
+principal = "Tamsin"
+intended_grant = "root:read; bakery-coop:read; tamsin-private:read,write"
+after = "open"
+note = "remember onto a name that already exists in the same scope"
+scope = "bakery-coop"
+name = "rota-swaps"
+content = "Swaps are now arranged in the group chat."
+tags = ["rota"]
+probe = { query = "shift swaps whiteboard", scope = "bakery-coop", limit = 5 }
+
+[[case]]
+id = "remember/new-child-scope"
+op = "remember"
+view = "one_scope"
+principal = "Peregrine"
+intended_grant = "root:read; garden-club:read,write; peregrine-private:read,write"
+after = "open"
+note = "write creates a child scope under an existing scope"
+scope = "garden-club/committee"
+name = "rent-review"
+content = "Committee agreed allotment rent stays the same next year."
+tags = ["plots"]
+probe = { query = "allotment rent", scope = "garden-club", limit = 5 }
+
+[[case]]
+id = "remember/root-shadowing-scoped-name"
+op = "remember"
+view = "root_only"
+principal = "Peregrine"
+intended_grant = "root:read; garden-club:read,write; peregrine-private:read,write"
+after = "open"
+note = "root write using a name that exists in two scopes"
+name = "seed-swap-list"
+content = "Seed swap moves to the parish hall this year."
+tags = ["seeds"]
+probe = { query = "seed swap", limit = 5 }
+
+# ---------------------------------------------------------------- edit
+
+[[case]]
+id = "edit/root-allergen-content"
+op = "edit"
+view = "root_only"
+principal = "Ottoline"
+intended_grant = "root:read,write; bakery-coop:read,write; bakery-coop/board:read,write; ottoline-private:read,write"
+after = "open"
+note = "edit the shared half of a duplicate name; the board half is untouched"
+name = "allergen-policy"
+content = "Shared allergen policy: every tray card is checked by a second person before the stall opens."
+probe = { query = "allergen policy second person tray card", scope = "all", limit = 5 }
+
+[[case]]
+id = "edit/board-allergen-tags"
+op = "edit"
+view = "one_scope"
+principal = "Muffet"
+intended_grant = "root:read; bakery-coop:read,write; bakery-coop/board:read,write; muffet-private:read,write"
+after = "open"
+note = "tags-only edit of the private half of a duplicate name"
+scope = "bakery-coop/board"
+name = "allergen-policy"
+tags = ["allergens", "policy", "board-only", "agreed"]
+
+[[case]]
+id = "edit/scoped-name-without-scope"
+op = "edit"
+view = "root_only"
+principal = "Ottoline"
+intended_grant = "root:read,write; bakery-coop:read,write; ottoline-private:read,write"
+after = "open"
+note = "name exists only in scopes; omitted scope does not fall back"
+name = "sourdough-starter-feeding"
+content = "Feed once a day."
+
+[[case]]
+id = "edit/peregrine-private-by-brannoc"
+op = "edit"
+view = "one_scope"
+principal = "Brannoc"
+intended_grant = "root:read; garden-club:read; brannoc-private:read,write"
+after = "open"
+note = "edit inside another principal's private scope"
+scope = "peregrine-private"
+name = "seed-swap-list"
+content = "Sharing everything this year."
+
+# ---------------------------------------------------------------- move
+
+[[case]]
+id = "move/private-to-shared-name-taken"
+op = "move"
+view = "one_scope"
+principal = "Ottoline"
+intended_grant = "root:read,write; bakery-coop:read,write; ottoline-private:read,write"
+after = "open"
+note = "destination already holds the shared half of the duplicate name"
+from_scope = "ottoline-private"
+to_scope = "bakery-coop"
+name = "sourdough-starter-feeding"
+
+[[case]]
+id = "move/private-to-shared-renamed"
+op = "move"
+view = "one_scope"
+principal = "Ottoline"
+intended_grant = "root:read,write; bakery-coop:read,write; ottoline-private:read,write"
+after = "open"
+note = "private memory published into a shared scope under a new name"
+from_scope = "ottoline-private"
+to_scope = "bakery-coop"
+name = "sourdough-starter-feeding"
+new_name = "ottoline-starter-notes"
+probe = { query = "sourdough starter feeding", scope = "bakery-coop", limit = 10 }
+
+observe = ["response", "state_change", "probe.result.hits.name", "probe.result.hits.scope"]
+[[case]]
+id = "move/board-to-root"
+op = "move"
+view = "one_scope"
+principal = "Muffet"
+intended_grant = "root:read; bakery-coop:read,write; bakery-coop/board:read,write; muffet-private:read,write"
+after = "open"
+note = "board-only memory moved to root"
+from_scope = "bakery-coop/board"
+to_scope = "global"
+name = "supplier-flour-price"
+probe = { query = "flour supplier price negotiated", limit = 5 }
+
+[[case]]
+id = "move/missing-source"
+op = "move"
+view = "one_scope"
+principal = "Wexley"
+intended_grant = "root:read,write; wexley-private:read,write"
+after = "open"
+note = "source name does not exist in the source scope"
+from_scope = "wexley-private"
+to_scope = "global"
+name = "seed-swap-list"
+
+[[case]]
+id = "move/root-to-choir"
+op = "move"
+view = "root_only"
+principal = "Isolde"
+intended_grant = "root:read; lantern-choir:read,write; isolde-private:read,write"
+after = "open"
+note = "root memory moved into a scope; source scope omitted"
+to_scope = "lantern-choir"
+name = "hall-booking"
+probe = { query = "parish hall Tanner Lane key", limit = 5 }
+
+# ---------------------------------------------------------------- forget
+
+[[case]]
+id = "forget/shared-rota-keeps-private"
+op = "forget"
+view = "one_scope"
+principal = "Brannoc"
+intended_grant = "root:read; bakery-coop:read,write; brannoc-private:read,write"
+after = "open"
+note = "forget the shared half of a duplicate name; the private half remains"
+scope = "bakery-coop"
+name = "rota-swaps"
+probe = { query = "rota swaps", scope = "all", limit = 5 }
+
+[[case]]
+id = "forget/scoped-name-without-scope"
+op = "forget"
+view = "root_only"
+principal = "Peregrine"
+intended_grant = "root:read; garden-club:read,write; peregrine-private:read,write"
+after = "open"
+note = "name exists only in scopes; omitted scope does not fall back"
+name = "seed-swap-list"
+
+[[case]]
+id = "forget/root-allergen-keeps-board"
+op = "forget"
+view = "root_only"
+principal = "Ottoline"
+intended_grant = "root:read,write; bakery-coop:read,write; bakery-coop/board:read,write; ottoline-private:read,write"
+after = "open"
+note = "forget the shared half of a duplicate name; the board half remains"
+name = "allergen-policy"
+
+[[case]]
+id = "forget/board-memory-by-non-member"
+op = "forget"
+view = "one_scope"
+principal = "Tamsin"
+intended_grant = "root:read; lantern-choir:read,write; tamsin-private:read,write"
+after = "open"
+note = "delete in a scope the principal has no intended grant for"
+scope = "bakery-coop/board"
+name = "member-dispute-log"
