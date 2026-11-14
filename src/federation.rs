@@ -65,6 +65,8 @@ impl StoreReadResult {
     }
 }
 
+const DEFAULT_TIMEOUT: Duration = Duration::from_millis(2_000);
+
 /// Trusted sibling topology and its bounded request deadline.
 #[derive(Clone)]
 pub(crate) struct Federation {
@@ -79,8 +81,10 @@ impl Default for Federation {
         Self {
             store_id: "local".to_owned(),
             siblings: BTreeMap::new(),
-            timeout: Duration::from_millis(2_000),
-            client: Arc::new(RmcpSiblingReadClient),
+            timeout: DEFAULT_TIMEOUT,
+            client: Arc::new(RmcpSiblingReadClient {
+                timeout: DEFAULT_TIMEOUT,
+            }),
         }
     }
 }
@@ -89,11 +93,12 @@ impl Federation {
     /// Build federation topology from validated configuration.
     pub(crate) fn from_config(config: &Config) -> Result<Self, crate::error::MemoryError> {
         config.validate_siblings()?;
+        let timeout = Duration::from_millis(config.straddle_timeout_ms);
         Ok(Self {
             store_id: config.store_id.clone(),
             siblings: config.siblings.clone(),
-            timeout: Duration::from_millis(config.straddle_timeout_ms),
-            client: Arc::new(RmcpSiblingReadClient),
+            timeout,
+            client: Arc::new(RmcpSiblingReadClient { timeout }),
         })
     }
 
@@ -169,7 +174,16 @@ trait SiblingReadClient: Send + Sync {
     ) -> StoreReadResult;
 }
 
-struct RmcpSiblingReadClient;
+/// Reads a sibling over rmcp's Streamable HTTP client.
+///
+/// `timeout` is set on the HTTP client itself, not only on the caller's wait.
+/// rmcp runs the transport in a task of its own and reads a JSON response
+/// body there, so aborting the caller does not stop that read; without a
+/// client timeout an endless body is buffered until the process runs out of
+/// memory (RUSTSEC-2026-0462).
+struct RmcpSiblingReadClient {
+    timeout: Duration,
+}
 
 #[async_trait::async_trait]
 impl SiblingReadClient for RmcpSiblingReadClient {
@@ -180,7 +194,7 @@ impl SiblingReadClient for RmcpSiblingReadClient {
         name: &str,
         scope: &str,
     ) -> StoreReadResult {
-        read_one_sibling(endpoint, bearer, name, scope).await
+        read_one_sibling(endpoint, bearer, name, scope, self.timeout).await
     }
 }
 
@@ -189,8 +203,19 @@ async fn read_one_sibling(
     bearer: String,
     name: &str,
     scope: &str,
+    timeout: Duration,
 ) -> StoreReadResult {
-    let transport = StreamableHttpClientTransport::from_config(
+    // rmcp's own default client, plus a total timeout that covers the body.
+    let http = match rmcp_reqwest::Client::builder()
+        .pool_max_idle_per_host(0)
+        .timeout(timeout)
+        .build()
+    {
+        Ok(http) => http,
+        Err(_error) => return StoreReadResult::status(StoreReadStatus::Unreachable),
+    };
+    let transport = StreamableHttpClientTransport::with_client(
+        http,
         StreamableHttpClientTransportConfig::with_uri(endpoint.to_owned()).auth_header(bearer),
     );
     let client = match ClientInfo::default().serve(transport).await {
@@ -327,5 +352,70 @@ mod tests {
 
         assert_eq!(result["fcc"].status, StoreReadStatus::Unreachable);
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    /// Serve one response of `content_type` whose chunked body starts with
+    /// `opening` and then never ends, read it as a sibling with a 200 ms
+    /// deadline, and return how long the server could keep writing. That the
+    /// caller got `Unreachable` is not the point: rmcp's transport task
+    /// outlives the caller, so the server is the witness of whether anything
+    /// is still reading.
+    async fn endless_body_closed_after(content_type: &str, opening: &str) -> Duration {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let head = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: {content_type}\r\ntransfer-encoding: chunked\r\n\r\n{:x}\r\n{opening}\r\n",
+            opening.len()
+        );
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request).await.unwrap();
+            socket.write_all(head.as_bytes()).await.unwrap();
+            // Spaces are JSON whitespace, and inside an SSE `data:` line they
+            // are more of a line that never reaches its newline.
+            let chunk = format!("{:x}\r\n{}\r\n", 1024, " ".repeat(1024));
+            let started = tokio::time::Instant::now();
+            while started.elapsed() < Duration::from_secs(10) {
+                if socket.write_all(chunk.as_bytes()).await.is_err() {
+                    return Some(started.elapsed());
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            None
+        });
+
+        let timeout = Duration::from_millis(200);
+        let federation = Federation {
+            store_id: "personal".into(),
+            siblings: BTreeMap::from([("fcc".into(), endpoint)]),
+            timeout,
+            client: Arc::new(RmcpSiblingReadClient { timeout }),
+        };
+        let result = federation
+            .read_siblings("person-cammy", "global", Some("delegation".into()))
+            .await;
+        assert_eq!(result["fcc"].status, StoreReadStatus::Unreachable);
+
+        server
+            .await
+            .unwrap()
+            .expect("the client was still reading 10 s after a 200 ms deadline")
+    }
+
+    #[tokio::test]
+    async fn endless_json_body_loses_its_connection_at_the_deadline() {
+        let closed_after = endless_body_closed_after("application/json", " ").await;
+        assert!(closed_after < Duration::from_secs(5), "{closed_after:?}");
+    }
+
+    /// The same attack by the other door: rmcp 1.8's SSE reader (sse-stream
+    /// 0.2) has no cap on a line that never ends.
+    #[tokio::test]
+    async fn endless_sse_line_loses_its_connection_at_the_deadline() {
+        let closed_after = endless_body_closed_after("text/event-stream", "data: ").await;
+        assert!(closed_after < Duration::from_secs(5), "{closed_after:?}");
     }
 }

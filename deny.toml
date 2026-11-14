@@ -12,13 +12,40 @@ ignore = [
     # Transitive deps we can't control — unmaintained, not vulnerable.
     { id = "RUSTSEC-2024-0436", reason = "paste: transitive via thiserror/serde derive macros" },
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile: transitive via rustls-native-certs 0.7 → ureq 2 (native-certs feature)" },
-    # Source-reviewed exception (2026-10-17): these affect ZIP extraction.
-    # Pali loads safetensors; Candle's optional NPZ/PTH code reads archives and
-    # never calls extract(). No published Candle release permits fixed ZIP 9.
-    # Revisit on a model-format/extraction change or when Candle permits ZIP 9.
+    # Source-reviewed exception (2026-10-17, re-read 2026-11-13): these affect
+    # ZIP extraction. zip 7 arrives only through candle-core 0.10.2. Pali loads
+    # safetensors; Candle's optional NPZ/PTH code opens archives with
+    # ZipArchive::new and reads entries by name or index, and never calls
+    # extract().
+    # candle-core 0.11.1 takes zip 9: remove all four on that move (#422).
     { id = "RUSTSEC-2026-0367", reason = "Candle ZIP dependency: privileged-bit extraction is unreachable from Pali's safetensors loader" },
     { id = "RUSTSEC-2026-0368", reason = "Candle ZIP dependency: symlink extraction is unreachable from Pali's safetensors loader" },
     { id = "RUSTSEC-2026-0369", reason = "Candle ZIP dependency: permission updates through extracted symlinks are unreachable from Pali's safetensors loader" },
+    { id = "RUSTSEC-2026-0429", reason = "Candle ZIP dependency: the ZipArchive::extract symlink-size abort is unreachable; Candle never calls extract" },
+    # Source-reviewed exception (2026-10-30): zstd 0.13 / zstd-safe 7 arrive
+    # only through tantivy 0.26 (tantivy-sstable requires zstd ^0.13). Its sole
+    # zstd use is the one-shot bulk Compressor/Decompressor on Pali's own index
+    # blocks: no stream encoder or decoder, no decompress_stream, and the
+    # `seekable` feature is not enabled. Remove on the move to tantivy 0.27,
+    # which takes zstd 0.14.
+    { id = "RUSTSEC-2026-0391", reason = "zstd via tantivy-sstable: stream with_context reuse is unreachable; only the bulk API is used" },
+    { id = "RUSTSEC-2026-0398", reason = "zstd-safe via tantivy-sstable: Seekable is not compiled; the seekable feature is off" },
+    { id = "RUSTSEC-2026-0403", reason = "zstd-safe via tantivy-sstable: legacy-frame decompress_stream is unreachable; only one-shot bulk decompression is used" },
+    # Mitigated, not unreachable (2026-11-13): Pali compiles and uses the
+    # affected client. src/federation.rs dials rmcp's Streamable HTTP client
+    # for each straddled sibling read. Two things bound it. It dials only the
+    # endpoints an operator names under [siblings] in the config file (https
+    # only, never an address taken from a request), which is the advisory's
+    # own mitigation. And federation hands rmcp an HTTP client that times out
+    # each HTTP request, body included, at straddle_timeout_ms: rmcp reads the
+    # body in a task of its own, which the caller's deadline alone does not
+    # stop (tests: endless_json_body_... and endless_sse_line_loses_its_
+    # connection_at_the_deadline). A read makes several requests, so a
+    # compromised sibling can still make this instance buffer what it can
+    # send inside that timeout on each. The fix needs rmcp >=3.9.0, and
+    # mcp-session 0.2.0 (the newest release) requires rmcp 1. Remove with
+    # that upgrade (#421).
+    { id = "RUSTSEC-2026-0462", reason = "rmcp Streamable HTTP client: dials only operator-configured sibling endpoints, with a per-request HTTP timeout that covers the body; upgrade blocked on mcp-session (#421)" },
 ]
 
 # --- Licenses -------------------------------------------------------------
