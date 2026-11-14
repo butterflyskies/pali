@@ -14,7 +14,15 @@ permissions: {}
 
 jobs:
   linux:
-    runs-on: docker
+    # TEMPORARY pin, to be put back to `docker`. Two runners carry `docker`;
+    # on 60776f82 the candle embedding tests hit their 60 s inference timeout
+    # (`large_batch_is_chunked`, `long_text_is_truncated`) in CI runs 89 and 93,
+    # while branches carrying the same commits pass on 6f21bb94 (runs 90, 91).
+    # `docs-release` is a label only 6f21bb94 carries, with the same job image.
+    # Remove this when 60776f82's slowness is explained or fixed
+    # (lacuna/janiform#86 tracks the same runner); the 60 s timeout stays so it
+    # keeps reporting.
+    runs-on: docs-release
     permissions:
       contents: read
     steps:
