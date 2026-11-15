@@ -21,19 +21,18 @@
 //! stops resolving a name in a given scope, or a corpus/case edit that was
 //! not re-recorded.
 
+mod common;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use async_trait::async_trait;
 use axum::body::Body;
 use http::Request;
 use pali::{
     auth::AuthProvider,
-    embedding::EmbeddingBackend,
-    error::MemoryError,
     health::HealthRegistry,
     index::InMemoryStore,
     repo::MemoryRepo,
@@ -49,14 +48,16 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt as _;
 
+use common::StubEmbeddingBackend;
+
 /// Environment variable that switches the test from replay to record.
 const RECORD_ENV: &str = "PALI_ACCESS_FIXTURE_RECORD";
 
 /// Version of the record layout in `before.json`.
 const RECORD_FORMAT: u64 = 1;
 
-/// Dimensionality of the deterministic test embedding.
-const DIMS: usize = 256;
+/// Dimensionality of the shared deterministic test embedding.
+const DIMS: usize = common::HASH_EMBEDDING_DIMS;
 
 /// Page size used when walking `list` results.
 const LIST_PAGE_LIMIT: usize = 100;
@@ -81,80 +82,6 @@ const DEFAULT_RECALL_LIMIT: usize = 5;
 
 fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/access")
-}
-
-// ---------------------------------------------------------------------------
-// Deterministic embedding
-// ---------------------------------------------------------------------------
-
-/// Words too common to carry topic signal in the hashed bag of words.
-const STOP_WORDS: &[&str] = &[
-    "the", "and", "for", "with", "that", "this", "are", "was", "but", "not", "you", "your", "from",
-    "into", "then", "than", "each", "all", "any", "one", "two", "its", "has", "have", "who", "out",
-    "off", "our", "can", "will", "would", "what", "when", "only", "also", "per",
-];
-
-/// Hashed bag-of-features embedding: lower-cased alphanumeric words of three
-/// or more characters (minus stop words) at weight 1, plus every character
-/// trigram of those words at weight 1/4, hashed with FNV-1a into `DIMS`
-/// signed buckets, then L2-normalised. Fully deterministic across runs and
-/// platforms. Words keep related notes near each other, so recall ranking
-/// reflects content; trigrams make texts that share no word still differ in
-/// distance, because `InMemoryStore` orders equal distances arbitrarily.
-struct HashedBagEmbedding;
-
-fn fnv1a(token: &str) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in token.bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0100_0000_01b3);
-    }
-    hash
-}
-
-fn add_feature(vector: &mut [f32], feature: &str, weight: f32) {
-    let hash = fnv1a(feature);
-    let bucket = usize::try_from(hash % DIMS as u64).expect("bucket fits in usize");
-    let sign = if hash & (1 << 32) == 0 { 1.0 } else { -1.0 };
-    vector[bucket] += sign * weight;
-}
-
-fn embed_text(text: &str) -> Vec<f32> {
-    let mut vector = vec![0.0_f32; DIMS];
-    let lower = text.to_lowercase();
-    for word in lower
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|t| t.chars().count() >= 3 && !STOP_WORDS.contains(t))
-    {
-        add_feature(&mut vector, word, 1.0);
-        let chars: Vec<char> = word.chars().collect();
-        for window in chars.windows(3) {
-            let trigram: String = window.iter().collect();
-            add_feature(&mut vector, &format!("#{trigram}"), 0.25);
-        }
-    }
-    let norm = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
-    if norm == 0.0 {
-        // A text with no usable tokens gets a fixed unit vector rather than
-        // a zero vector, whose cosine similarity would be NaN.
-        vector[0] = 1.0;
-    } else {
-        for v in &mut vector {
-            *v /= norm;
-        }
-    }
-    vector
-}
-
-#[async_trait]
-impl EmbeddingBackend for HashedBagEmbedding {
-    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, MemoryError> {
-        Ok(texts.iter().map(|t| embed_text(t)).collect())
-    }
-
-    fn dimensions(&self) -> usize {
-        DIMS
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -440,7 +367,7 @@ async fn build_world(corpus: &[Memory]) -> World {
     let state = Arc::new(AppState::new(
         repo,
         "main".to_string(),
-        Box::new(HashedBagEmbedding),
+        Box::new(StubEmbeddingBackend),
         Box::new(InMemoryStore::new(DIMS)),
         AuthProvider::new(),
         HealthRegistry::new(),
@@ -696,7 +623,11 @@ fn assert_no_semantic_tie(
 ) {
     let index = world.state.index.as_ref();
     let mut candidates = index
-        .search(filter, &embed_text(query), index.search_bound(filter))
+        .search(
+            filter,
+            &StubEmbeddingBackend::embed_text(query),
+            index.search_bound(filter),
+        )
         .expect("direct semantic search");
     if let Some(allowed) = allowed {
         candidates.retain(|c| allowed.contains(&c.1));

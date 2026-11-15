@@ -19,6 +19,9 @@ verify clap argument parsing were converted to unit tests in `src/main.rs`.
 - Test execution dropped from ~10s per test to ~18-26ms (500x faster)
 - No port allocation, no process spawning, no polling — deterministic execution
 - Stubs are explicit about what they fake — no hidden behavior from full server startup
+- `StubEmbeddingBackend` is a deterministic, offline hash embedder (FNV-1a bag of tokens), so
+  stub-backed tests can populate the store; `build_state_with_embedding()` substitutes a
+  deliberately broken backend for control tests (#377)
 - Shared `tests/common/mod.rs` establishes a pattern for future integration tests
 - Subprocess tests are still appropriate when testing the binary's actual startup behavior
 
