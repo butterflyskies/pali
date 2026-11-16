@@ -90,6 +90,11 @@ impl TestServer {
         }
     }
 
+    /// A clone of the router, for raw HTTP requests outside a session.
+    pub fn router(&self) -> axum::Router {
+        self.router.clone()
+    }
+
     /// Open a session with no extra request headers.
     pub async fn connect(&self) -> Result<McpTestClient, TransportError> {
         self.connect_with_headers(HeaderMap::new()).await
@@ -197,6 +202,79 @@ impl McpTestClient {
         .await?;
         let reply = read_rpc_response(response, id).await?;
         classify_tool_reply(&reply)
+    }
+
+    /// Send one JSON-RPC request with any method and return the whole
+    /// validated response (`result` or `error`), for methods other than
+    /// `tools/call`: `tools/list`, `ping`, `completion/complete`, and so on.
+    pub async fn request(&self, method: &str, params: Value) -> Result<Value, TransportError> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let request = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
+        let response = post(
+            &self.router,
+            &self.headers,
+            Some((&self.session_id, &self.protocol_version)),
+            request,
+        )
+        .await?;
+        read_rpc_response(response, id).await
+    }
+
+    /// A client that sends `headers` (another principal's credentials) on
+    /// this client's session id. Session ownership tests use it: B presents
+    /// A's session id with B's own credential.
+    pub fn borrow_session(&self, headers: HeaderMap) -> McpTestClient {
+        McpTestClient {
+            router: self.router.clone(),
+            server_id: self.server_id,
+            headers,
+            session_id: self.session_id.clone(),
+            protocol_version: self.protocol_version.clone(),
+            next_id: AtomicU64::new(1_000),
+        }
+    }
+
+    /// Ask for the session's server-to-client stream with `GET /mcp`, as a
+    /// client does to listen, or to resume with `Last-Event-ID` after a
+    /// dropped connection. Returns the status when the server opens the
+    /// stream; the stream itself is dropped unread, since it need not end.
+    pub async fn open_stream(
+        &self,
+        last_event_id: Option<&str>,
+    ) -> Result<StatusCode, TransportError> {
+        let mut request = Request::builder()
+            .method("GET")
+            .uri("/mcp")
+            .header(header::HOST, "127.0.0.1")
+            .header(header::ACCEPT, "text/event-stream")
+            .body(Body::empty())
+            .expect("static request parts are valid");
+        request.headers_mut().extend(self.headers.clone());
+        request
+            .headers_mut()
+            .insert("mcp-session-id", self.session_id.clone());
+        request
+            .headers_mut()
+            .insert("mcp-protocol-version", self.protocol_version.clone());
+        if let Some(id) = last_event_id {
+            let id = HeaderValue::from_str(id).expect("event id is a valid header value");
+            request.headers_mut().insert("last-event-id", id);
+        }
+        let response = tokio::time::timeout(RESPONSE_TIMEOUT, self.router.clone().oneshot(request))
+            .await
+            .map_err(|_| TransportError {
+                status: None,
+                detail: format!("stream request gave no response within {RESPONSE_TIMEOUT:?}"),
+            })?
+            .map_err(|e| TransportError {
+                status: None,
+                detail: format!("router call failed: {e}"),
+            })?;
+        if response.status().is_success() {
+            Ok(response.status())
+        } else {
+            Err(failed_status(response).await)
+        }
     }
 
     /// End the session with `DELETE /mcp`.
@@ -610,7 +688,10 @@ impl SelfCheckReceipt {
 /// - `recall` with each memory's own text ranks that memory first as a
 ///   `"both"` match (embedding and keyword paths), at an embedding distance
 ///   of at most [`SELF_DISTANCE_MAX`], with the other memory at least
-///   [`SEPARATION_MIN`] further away.
+///   [`SEPARATION_MIN`] further away; when the other memory is missing from
+///   the results or came back by keyword only, the farthest other embedding
+///   hit must stand that far off instead, and a result with no other
+///   embedding hit fails.
 ///
 /// The recall conditions reject a dead embedder hidden behind keyword
 /// search, a dead keyword index hidden behind embeddings, and random,
@@ -690,7 +771,9 @@ const SEPARATION_MIN: f64 = 0.5;
 
 /// Recall with `target`'s own text; require `target` first, found by both
 /// the embedding and the keyword path, at near-zero distance, and `other`
-/// at least [`SEPARATION_MIN`] further away.
+/// at least [`SEPARATION_MIN`] further away. If `other` is not among the
+/// embedding hits (missing, or a keyword-only hit), the farthest other
+/// embedding hit is measured instead; with none, the check fails.
 async fn recall_ranks_first(
     client: &McpTestClient,
     target: &StoreSeed,

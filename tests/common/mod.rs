@@ -10,7 +10,10 @@
 //! helpers, so the rest would warn as dead code there.
 #![allow(dead_code)]
 
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use mcp_session::BoundedSessionManagerBuilder;
@@ -21,8 +24,9 @@ use pali::{
     health::{healthz_handler, readyz_handler, version_handler, HealthRegistry},
     index::InMemoryStore,
     repo::MemoryRepo,
-    server::MemoryServer,
-    types::AppState,
+    search::rebuild_lexical_from_router,
+    server::{full_reindex, MemoryServer},
+    types::{AppState, Memory},
 };
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use tokio_util::sync::CancellationToken;
@@ -194,4 +198,73 @@ pub fn build_test_router(state: Arc<AppState>, allowed_hosts: Vec<String>) -> ax
         .route("/version", axum::routing::get(version_handler))
         .with_state(Arc::clone(&state))
         .nest_service("/mcp", service)
+}
+
+// ---------------------------------------------------------------------------
+// The access corpus (#409)
+// ---------------------------------------------------------------------------
+
+/// Root of the fictional access corpus, in pali's on-disk layout.
+pub fn access_corpus_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/access/corpus")
+}
+
+fn collect_markdown(dir: &Path, out: &mut Vec<PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("read corpus dir") {
+        let path = entry.expect("corpus dir entry").path();
+        if path.is_dir() {
+            collect_markdown(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            out.push(path);
+        }
+    }
+}
+
+/// Load the access corpus, checking each file sits where pali would store it.
+pub fn load_access_corpus() -> Vec<Memory> {
+    let root = access_corpus_dir();
+    let mut paths = Vec::new();
+    collect_markdown(&root, &mut paths);
+    paths.sort();
+    let memories: Vec<Memory> = paths
+        .iter()
+        .map(|path| {
+            let raw = std::fs::read_to_string(path).expect("read corpus file");
+            let memory = Memory::from_markdown(&raw)
+                .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+            let expected = root
+                .join(memory.metadata.scope.dir_prefix().as_ref())
+                .join(format!("{}.md", memory.name));
+            assert_eq!(
+                path, &expected,
+                "corpus file is not at the path its frontmatter implies"
+            );
+            memory
+        })
+        .collect();
+    assert!(!memories.is_empty(), "corpus must not be empty");
+    memories
+}
+
+/// Save `memories` into `state` and rebuild the vector and keyword indexes
+/// over them, so recall and list see the whole set.
+pub async fn seed_and_index(state: &AppState, memories: &[Memory]) {
+    for memory in memories {
+        state
+            .repo
+            .save_memory(memory)
+            .await
+            .expect("save seed memory");
+    }
+    let stats = full_reindex(
+        &state.router,
+        state.embedding.as_ref(),
+        state.index.as_ref(),
+    )
+    .await
+    .expect("vector reindex");
+    assert_eq!(stats.errors, 0, "vector reindex reported errors");
+    rebuild_lexical_from_router(&state.router, &state.lexical)
+        .await
+        .expect("lexical rebuild");
 }

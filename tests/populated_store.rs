@@ -7,6 +7,8 @@
 //! broken one as broken.
 
 mod common;
+// This crate uses only part of the harness; the rest would warn as dead code.
+#[allow(dead_code)]
 #[path = "common/mcp_harness.rs"]
 mod mcp_harness;
 

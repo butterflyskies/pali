@@ -278,43 +278,6 @@ fn load_cases(corpus_scopes: &BTreeSet<String>) -> Vec<Case> {
 // Corpus
 // ---------------------------------------------------------------------------
 
-fn collect_markdown(dir: &Path, out: &mut Vec<PathBuf>) {
-    for entry in std::fs::read_dir(dir).expect("read corpus dir") {
-        let path = entry.expect("corpus dir entry").path();
-        if path.is_dir() {
-            collect_markdown(&path, out);
-        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
-            out.push(path);
-        }
-    }
-}
-
-/// Load the corpus, checking each file sits where pali would store it.
-fn load_corpus() -> Vec<Memory> {
-    let root = fixture_dir().join("corpus");
-    let mut paths = Vec::new();
-    collect_markdown(&root, &mut paths);
-    paths.sort();
-    let memories: Vec<Memory> = paths
-        .iter()
-        .map(|path| {
-            let raw = std::fs::read_to_string(path).expect("read corpus file");
-            let memory = Memory::from_markdown(&raw)
-                .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
-            let expected = root
-                .join(memory.metadata.scope.dir_prefix().as_ref())
-                .join(format!("{}.md", memory.name));
-            assert_eq!(
-                path, &expected,
-                "corpus file is not at the path its frontmatter implies"
-            );
-            memory
-        })
-        .collect();
-    assert!(!memories.is_empty(), "corpus must not be empty");
-    memories
-}
-
 fn sha256_hex(text: &str) -> String {
     Sha256::digest(text.as_bytes())
         .iter()
@@ -980,7 +943,7 @@ fn diff_keyed(section: &str, key: &str, expected: &Value, actual: &Value, out: &
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn access_fixture_before_matches_record() {
-    let corpus = load_corpus();
+    let corpus = common::load_access_corpus();
     let corpus_scopes: BTreeSet<String> = corpus
         .iter()
         .map(|m| m.metadata.scope.to_string())
