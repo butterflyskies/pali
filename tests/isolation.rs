@@ -631,9 +631,12 @@ async fn a04_b_cannot_use_or_end_a_session_by_its_id() {
     // asked for.
     let listened = b_in_a.open_stream(None).await;
     let replayed = b_in_a.open_stream(Some("0/0")).await;
+    // The owner's control for the two stream probes, taken before B's
+    // DELETE: after it, a failure here would be the DELETE's doing, which
+    // `ended` and `after` already report.
+    let a_listens = a.open_stream(None).await;
     let ended = a.borrow_session(bearer(B_TOKEN)).close().await;
     let after = a.call_tool("list", json!({ "scope": A_SCOPE })).await;
-    let a_listens = a.open_stream(None).await;
 
     let mut wrong = Vec::new();
     // Any reply, a tool error included, means B's request ran in A's
@@ -1122,15 +1125,61 @@ async fn public_routes_disclose_no_memory() {
     for route in PUBLIC_ROUTES {
         let (status, _, body) = raw_body(&w, "GET", route, HeaderMap::new(), String::new()).await;
         assert_eq!(status, StatusCode::OK, "{route}: {body}");
-        for m in &corpus {
-            let scope = m.metadata.scope.to_string();
-            assert!(
-                !body.contains(m.name.as_ref()) && !(scope != "global" && body.contains(&scope)),
-                "{route} disclosed {scope}/{}: {body}",
-                m.name
-            );
-        }
+        assert_names_nothing_of_the_store(&w, &corpus, route, &body);
     }
+}
+
+/// Panics if `body` holds a corpus memory's name, a non-global scope, or the
+/// path of the repository or of the recall log.
+fn assert_names_nothing_of_the_store(w: &World, corpus: &[Memory], route: &str, body: &str) {
+    for m in corpus {
+        let scope = m.metadata.scope.to_string();
+        assert!(
+            !body.contains(m.name.as_ref()) && !(scope != "global" && body.contains(&scope)),
+            "{route} disclosed {scope}/{}: {body}",
+            m.name
+        );
+    }
+    for dir in [&w._repo_dir, &w._recall_log_dir] {
+        let path = dir.path().to_string_lossy().into_owned();
+        assert!(!body.contains(&path), "{route} disclosed {path}: {body}");
+    }
+}
+
+// A01, the named exceptions, with subsystems down: the world in which
+// `/readyz` says most. A degraded `/readyz` may give its own status, each
+// check's `up` or `down`, and a reason from the fixed vocabulary
+// (`CheckResult::reason` in `src/health.rs`). Red if a down check starts to
+// carry anything else: a new field, or a reason that is not the reporter's
+// own static string.
+#[tokio::test]
+async fn degraded_readyz_discloses_no_memory() {
+    let w = world().await;
+    let corpus = common::load_access_corpus();
+    // Reasons the product itself reports (`src/repo.rs`,
+    // `src/embedding/candle.rs`).
+    w.state.health.git.report_err("list_memories failed");
+    w.state.health.embedding.report_err("embed failed");
+
+    let (status, _, body) = raw_body(&w, "GET", "/readyz", HeaderMap::new(), String::new()).await;
+    // Checked first: a world that did not degrade must not pass as the
+    // healthy sweep a second time.
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "/readyz: {body}");
+    assert_names_nothing_of_the_store(&w, &corpus, "/readyz (degraded)", &body);
+
+    let reply: Value = serde_json::from_str(&body).expect("/readyz answers in JSON");
+    assert_eq!(
+        reply,
+        json!({
+            "status": "not_ready",
+            "checks": {
+                "git_repo": { "status": "down", "reason": "list_memories failed" },
+                "embedding": { "status": "down", "reason": "embed failed" },
+                "vector_index": { "status": "up" },
+            },
+        }),
+        "a degraded /readyz says more, or other, than status, up or down, and a fixed reason"
+    );
 }
 
 /// What follows each call of `.method(` in `src`, from just inside the
@@ -1232,25 +1281,75 @@ async fn tools_list_is_the_set_swept() {
     assert_eq!(listed, swept);
 }
 
-// A06, completion. Red if completion, prompts or resources start offering
-// memory names, scopes or tags to B on a populated store.
+/// The JSON-RPC message in a POST `/mcp` answer, whether the transport sent
+/// it as JSON or as one event of a stream.
+fn rpc_message(body: &str) -> Value {
+    body.lines()
+        .map(|line| line.strip_prefix("data:").unwrap_or(line).trim())
+        .find_map(|line| serde_json::from_str::<Value>(line).ok())
+        .unwrap_or_else(|| panic!("HARNESS BROKEN: no JSON-RPC message in: {body}"))
+}
+
+// A06, completion. pali offers tools and nothing else, so there is no prompt
+// or resource for a completion to be asked about, and a probe of one would
+// pass whatever the handler did. This pins the absence instead: no such
+// capability is advertised, and each method gives an error or an empty list.
+// Red when pali gains completion, a prompt or a resource; whoever adds one
+// replaces that arm with a probe of a ref that then exists, asked by B on
+// this populated store.
 #[tokio::test]
 async fn methods_outside_tools_offer_no_memory() {
     let w = world().await;
     let _a = w.owner().await;
     let b = w.other().await;
+
+    let init = json!({
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": { "name": "pali-isolation", "version": "0" },
+        },
+    });
+    let (status, _, body) = raw_body(&w, "POST", "/mcp", bearer(B_TOKEN), init.to_string()).await;
+    assert_eq!(status, StatusCode::OK, "initialize: {body}");
+    let capabilities = &rpc_message(&body)["result"]["capabilities"];
+    // The control: the capabilities were read from where they are.
+    assert!(
+        capabilities.get("tools").is_some(),
+        "HARNESS BROKEN: initialize advertised no tools: {body}"
+    );
+    for surface in ["completions", "prompts", "resources"] {
+        assert!(
+            capabilities.get(surface).is_none(),
+            "pali now advertises {surface}: probe it as B before this test may pass"
+        );
+    }
+
     let completion = json!({
         "ref": { "type": "ref/prompt", "name": "recall" },
         "argument": { "name": "scope", "value": "otto" },
     });
-    for (method, params) in [
-        ("completion/complete", completion),
-        ("prompts/list", json!({})),
-        ("resources/list", json!({})),
-        ("resources/templates/list", json!({})),
+    for (method, params, listed) in [
+        ("completion/complete", completion, "/completion/values"),
+        ("prompts/list", json!({}), "/prompts"),
+        ("resources/list", json!({}), "/resources"),
+        ("resources/templates/list", json!({}), "/resourceTemplates"),
     ] {
         let reply = b.request(method, params).await.expect("an answer");
         let body = reply.to_string();
+        // A refusal offers nothing. A result must hold its list, empty: a
+        // result of another shape is not read as empty.
+        let offers_nothing = match reply.get("result") {
+            None => reply.get("error").is_some(),
+            Some(result) => result
+                .pointer(listed)
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty),
+        };
+        assert!(offers_nothing, "{method} offered something: {body}");
         assert!(
             !body.contains(A_SCOPE) && !body.contains(A_SENTINEL) && !body.contains("sentinel"),
             "{method} offered A's memory: {body}"
