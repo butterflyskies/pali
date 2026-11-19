@@ -12,16 +12,29 @@ ignore = [
     # Transitive deps we can't control — unmaintained, not vulnerable.
     { id = "RUSTSEC-2024-0436", reason = "paste: transitive via thiserror/serde derive macros" },
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile: transitive via rustls-native-certs 0.7 → ureq 2 (native-certs feature)" },
+    # Unmaintained, not vulnerable (2026-11-19): chrono is a direct dependency
+    # and also arrives through rmcp 1.8 and schemars 1.2. No fixed release
+    # exists; replacing it (jiff or time) needs Pali's own migration and the
+    # same move upstream.
+    { id = "RUSTSEC-2026-0543", reason = "chrono: unmaintained, no fixed release; direct dependency and transitive via rmcp/schemars" },
     # Source-reviewed exception (2026-10-17, re-read 2026-11-13): these affect
     # ZIP extraction. zip 7 arrives only through candle-core 0.10.2. Pali loads
     # safetensors; Candle's optional NPZ/PTH code opens archives with
     # ZipArchive::new and reads entries by name or index, and never calls
     # extract().
-    # candle-core 0.11.1 takes zip 9: remove all four on that move (#422).
+    # Re-read 2026-11-19 for four more: zip 7 is built with default features
+    # off and none enabled (`cargo tree -e features -i zip --all-features`), so
+    # neither aes-crypto nor legacy-zip is compiled, and Candle's src/ calls
+    # only ZipArchive::new and ZipWriter: no extract, no ZipStreamReader.
+    # candle-core 0.11.1 takes zip ^9.1.3: remove all eight on that move (#422).
     { id = "RUSTSEC-2026-0367", reason = "Candle ZIP dependency: privileged-bit extraction is unreachable from Pali's safetensors loader" },
     { id = "RUSTSEC-2026-0368", reason = "Candle ZIP dependency: symlink extraction is unreachable from Pali's safetensors loader" },
     { id = "RUSTSEC-2026-0369", reason = "Candle ZIP dependency: permission updates through extracted symlinks are unreachable from Pali's safetensors loader" },
     { id = "RUSTSEC-2026-0429", reason = "Candle ZIP dependency: the ZipArchive::extract symlink-size abort is unreachable; Candle never calls extract" },
+    { id = "RUSTSEC-2026-0545", reason = "Candle ZIP dependency: AES decryption is not compiled; the aes-crypto feature is off" },
+    { id = "RUSTSEC-2026-0546", reason = "Candle ZIP dependency: the ZipArchive::extract symlink escape is unreachable; Candle never calls extract" },
+    { id = "RUSTSEC-2026-0547", reason = "Candle ZIP dependency: Shrink/Reduce/Implode decoders are not compiled; the legacy-zip feature is off" },
+    { id = "RUSTSEC-2026-0548", reason = "Candle ZIP dependency: ZipStreamReader is unreachable; Candle reads through ZipArchive's central directory" },
     # Source-reviewed exception (2026-10-30): zstd 0.13 / zstd-safe 7 arrive
     # only through tantivy 0.26 (tantivy-sstable requires zstd ^0.13). Its sole
     # zstd use is the one-shot bulk Compressor/Decompressor on Pali's own index
