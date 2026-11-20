@@ -25,6 +25,14 @@ jobs:
     runs-on: docs-release
     permissions:
       contents: read
+    env:
+      # Nothing in this job reads debug info: a panic prints its own file and
+      # line, and RUST_BACKTRACE is not set. Leaving it out makes target/
+      # smaller and the test links lighter. Nothing reuses the job's
+      # incremental state either.
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - name: Check out repository
         uses: https://data.forgejo.org/actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
