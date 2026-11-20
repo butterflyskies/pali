@@ -57,7 +57,7 @@ jobs:
 
       - name: Install cargo-nextest
         run: |
-          curl -fsSL "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.136/cargo-nextest-0.9.136-x86_64-unknown-linux-gnu.tar.gz" \
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.136/cargo-nextest-0.9.136-x86_64-unknown-linux-gnu.tar.gz" \
             -o /tmp/cargo-nextest.tar.gz
           echo "a098eed56f2dd88c7fdca1e554a6b99fa1ffbd2a7a1c41b865700112981f6f52  /tmp/cargo-nextest.tar.gz" | sha256sum -c -
           tar xzf /tmp/cargo-nextest.tar.gz -C /usr/local/bin
