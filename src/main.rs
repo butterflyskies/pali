@@ -4,7 +4,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
-use mcp_session::BoundedSessionManagerBuilder;
+use pali::session_cap::BoundedSessionManagerBuilder;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -113,6 +113,8 @@ struct ServeArgs {
 
     /// Maximum number of concurrent MCP sessions. Oldest session is evicted
     /// when the limit is reached. Must be at least 1.
+    /// Applies to sessions opened by `initialize`; stateless 2026-07-28
+    /// requests are not counted.
     #[arg(
         long,
         default_value_t = 100,
@@ -123,23 +125,31 @@ struct ServeArgs {
 
     /// Maximum number of new sessions allowed within the rate-limit window.
     /// Set to 0 to disable rate limiting.
+    /// Applies to sessions opened by `initialize`; stateless 2026-07-28
+    /// requests are not counted.
     #[arg(long, default_value_t = 10, env = "PALI_SESSION_RATE_LIMIT")]
     session_rate_limit: usize,
 
     /// Duration of the session creation rate-limit window, in seconds.
     /// Set to 0 to disable rate limiting (treated the same as setting
     /// `--session-rate-limit 0`).
+    /// Applies to sessions opened by `initialize`; stateless 2026-07-28
+    /// requests are not counted.
     #[arg(long, default_value_t = 60, env = "PALI_SESSION_RATE_WINDOW_SECS")]
     session_rate_window_secs: u64,
 
     /// Idle timeout for MCP sessions, in seconds. Sessions are closed after
     /// this duration of inactivity. Set to 0 to disable (not recommended).
+    /// Applies to sessions opened by `initialize`; stateless 2026-07-28
+    /// requests are not counted.
     #[arg(long, default_value_t = 14400, env = "PALI_IDLE_TIMEOUT_SECS")]
     idle_timeout_secs: u64,
 
     /// Maximum session lifetime in seconds, regardless of activity. Sessions
     /// are closed after this duration even if actively used. Set to 0 to
     /// disable (default).
+    /// Applies to sessions opened by `initialize`; stateless 2026-07-28
+    /// requests are not counted.
     #[arg(long, default_value_t = 0, env = "PALI_MAX_SESSION_LIFETIME_SECS")]
     max_session_lifetime_secs: u64,
 

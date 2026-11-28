@@ -21,7 +21,7 @@ native-certs = ["reqwest/rustls-tls-native-roots", "dep:ureq"]
 otlp = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 
 [dependencies]
-rmcp = { version = "1.1", features = ["client", "server", "macros", "reqwest", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
+rmcp = { version = "3.11", features = ["client", "server", "macros", "reqwest", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 git2 = { version = "0.21", features = ["https", "vendored-openssl"] }
@@ -49,16 +49,18 @@ keyring = { version = "3", features = ["sync-secret-service", "apple-native", "w
 # Disable default features to avoid pulling in native-tls; rustls is the sole
 # HTTP TLS stack. json enables reqwest::Response::json() for OAuth device flow.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-# The reqwest that rmcp 1.x builds its Streamable HTTP client on, under its own
-# name: federation hands rmcp a client with a total timeout (RUSTSEC-2026-0462).
-# No features of its own; rmcp chooses them. Goes away with rmcp >=3.9 (#421).
+# The reqwest that rmcp builds its Streamable HTTP client on, under its own
+# name: federation hands rmcp a client whose total timeout covers the body, so a
+# straddled read stops at straddle_timeout_ms. No features of its own; rmcp
+# chooses them.
 rmcp-reqwest = { package = "reqwest", version = "0.13", default-features = false }
 async-trait = "0.1"
 # Deterministic FactId content digests for chunk-addressable retrieval
 # (ADR-0042). Already in the tree transitively; this makes it direct.
 sha2 = "0.10"
 dirs = "6"
-mcp-session = "0.2"
+# Stream bound for the session manager in src/session_cap.rs.
+futures-core = { version = "0.3", default-features = false }
 http = "1"
 arc-swap = "1"
 rusqlite = { version = "0.41", features = ["bundled"] }

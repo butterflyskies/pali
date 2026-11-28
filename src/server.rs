@@ -13,7 +13,8 @@ use rmcp::{
         wrapper::Parameters,
     },
     model::{
-        CallToolRequestParams, CallToolResult, ErrorData, Meta, ServerCapabilities, ServerInfo,
+        CallToolRequestParams, CallToolResponse, CallToolResult, ErrorData, MetaObject,
+        ServerCapabilities, ServerConfig,
     },
     service::RequestContext,
     tool, tool_handler, tool_router, RoleServer, ServerHandler,
@@ -495,7 +496,7 @@ fn finish_tool_call(
     let server_processing_duration_ms = elapsed_ms(start);
     match result {
         Ok(mut result) => {
-            let mut meta = result.meta.take().unwrap_or_else(Meta::new);
+            let mut meta = result.meta.take().unwrap_or_else(MetaObject::new);
             meta.insert(
                 SERVER_PROCESSING_DURATION_META_KEY.to_string(),
                 server_processing_duration_ms.into(),
@@ -2638,15 +2639,25 @@ impl ServerHandler for MemoryServer {
         &self,
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, ErrorData> {
+    ) -> Result<CallToolResponse, ErrorData> {
         let start = Instant::now();
         let tool_name = request.name.to_string();
         let context = ToolCallContext::new(self, request, context);
-        finish_tool_call(&tool_name, start, self.tool_router.call(context).await)
+        match self.tool_router.call(context).await {
+            Ok(CallToolResponse::Complete(result)) => {
+                finish_tool_call(&tool_name, start, Ok(result)).map(CallToolResponse::from)
+            }
+            Err(error) => {
+                finish_tool_call(&tool_name, start, Err(error)).map(CallToolResponse::from)
+            }
+            // Pali's tools return only complete results; an input-required or
+            // task response would pass through untimed.
+            Ok(other) => Ok(other),
+        }
     }
 
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "A semantic memory system for AI coding agents. Memories are stored as markdown files \
             in a git repository and indexed for semantic retrieval. Use `remember` to store, `recall` \
             to search, `read` to fetch a specific memory, `edit` to update, `forget` to delete, \
@@ -2722,7 +2733,7 @@ mod tests {
     use crate::test_log::capture_info_logs;
     use crate::{auth::AuthProvider, health::HealthRegistry, index::InMemoryStore};
     use async_trait::async_trait;
-    use rmcp::model::Content;
+    use rmcp::model::ContentBlock;
     use std::sync::Arc;
 
     struct ListTestEmbedding;
@@ -2740,7 +2751,7 @@ mod tests {
 
     #[test]
     fn tool_timing_preserves_content_and_adds_metadata() {
-        let original = CallToolResult::success(vec![Content::text("{\"ok\":true}")]);
+        let original = CallToolResult::success(vec![ContentBlock::text("{\"ok\":true}")]);
         let original_content = original.content.clone();
 
         let result = finish_tool_call("read", Instant::now(), Ok(original)).expect("success");
@@ -2758,9 +2769,10 @@ mod tests {
 
     #[test]
     fn tool_timing_merges_existing_metadata() {
-        let mut meta = Meta::new();
+        let mut meta = MetaObject::new();
         meta.insert("existing".to_string(), serde_json::json!("kept"));
-        let original = CallToolResult::success(vec![Content::text("ok")]).with_meta(Some(meta));
+        let original =
+            CallToolResult::success(vec![ContentBlock::text("ok")]).with_meta(Some(meta));
 
         let result = finish_tool_call("list", Instant::now(), Ok(original)).expect("success");
         let meta = result.meta.expect("metadata");
@@ -2787,7 +2799,7 @@ mod tests {
     #[test]
     fn tool_timing_logs_success_and_error_at_info() {
         let logs = capture_info_logs(|| {
-            let success = CallToolResult::success(vec![Content::text("ok")]);
+            let success = CallToolResult::success(vec![ContentBlock::text("ok")]);
             finish_tool_call("read", Instant::now(), Ok(success)).expect("success");
             let error = ErrorData::invalid_params("bad input", None);
             finish_tool_call("edit", Instant::now(), Err(error)).expect_err("error");

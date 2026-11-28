@@ -19,6 +19,19 @@
 
 ### Fixed
 
+- **`server/discover` is answered (rmcp 3.11, lacuna/pali#421):** clients that
+  probe with `server/discover` before `initialize` got HTTP 422 from rmcp 1.8
+  and could not fall back. A well-formed probe now gets the server's discovery
+  result; one without the required `_meta` gets 400, after which a client goes
+  on to `initialize`. The move to rmcp 3.11 also clears RUSTSEC-2026-0462
+  (unbounded response bodies in the Streamable HTTP client federation uses), so
+  its `deny.toml` exception is removed. The session cap, rate limit, idle
+  timeout and maximum lifetime that came from `mcp-session` (which requires
+  rmcp 1) are now carried in-tree with the same flags and behaviour. They
+  apply only to sessions opened by `initialize`: a client on the 2026-07-28
+  protocol revision is served stateless, so `--max-sessions`, the creation
+  rate limit, the idle timeout and the maximum lifetime do not count or close
+  its requests.
 - **TLS dependency security fixes:** update the locked rustls dependency from
   0.23.45 to 0.23.46, addressing RUSTSEC-2026-0346 through RUSTSEC-2026-0349.
 - **Remove unsafe-libyaml:** replace `serde_yaml_ng` with the pure-Rust

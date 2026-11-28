@@ -33,6 +33,8 @@ pub mod repo_router;
 pub mod search;
 /// MCP server implementation — tool handlers for the memory protocol.
 pub mod server;
+/// Streamable HTTP session manager with a live-session cap and FIFO eviction.
+pub mod session_cap;
 /// Test-only tracing capture helpers shared across unit-test modules.
 #[cfg(test)]
 pub(crate) mod test_log;

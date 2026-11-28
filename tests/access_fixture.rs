@@ -351,7 +351,7 @@ async fn build_world(corpus: &[Memory]) -> World {
     // Stateless JSON mode: each tools/call is one self-contained POST that
     // reaches the same handler code as a session-bound call.
     let config = StreamableHttpServerConfig::default()
-        .with_stateful_mode(false)
+        .with_legacy_session_mode(false)
         .with_json_response(true);
     let service_state = Arc::clone(&state);
     let service = StreamableHttpService::new(

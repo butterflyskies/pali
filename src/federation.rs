@@ -7,7 +7,7 @@
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use rmcp::{
-    model::{CallToolRequestParams, ClientInfo},
+    model::{CallToolRequestParams, ClientConfig},
     service::ServiceError,
     transport::{
         streamable_http_client::StreamableHttpClientTransportConfig, StreamableHttpClientTransport,
@@ -179,8 +179,8 @@ trait SiblingReadClient: Send + Sync {
 /// `timeout` is set on the HTTP client itself, not only on the caller's wait.
 /// rmcp runs the transport in a task of its own and reads a JSON response
 /// body there, so aborting the caller does not stop that read; without a
-/// client timeout an endless body is buffered until the process runs out of
-/// memory (RUSTSEC-2026-0462).
+/// client timeout an endless body would be read until rmcp's own size cap
+/// (RUSTSEC-2026-0462, fixed in rmcp 3.9), well past the deadline.
 struct RmcpSiblingReadClient {
     timeout: Duration,
 }
@@ -218,7 +218,7 @@ async fn read_one_sibling(
         http,
         StreamableHttpClientTransportConfig::with_uri(endpoint.to_owned()).auth_header(bearer),
     );
-    let client = match ClientInfo::default().serve(transport).await {
+    let client = match ClientConfig::default().serve(transport).await {
         Ok(client) => client,
         Err(_error) => return StoreReadResult::status(StoreReadStatus::Unreachable),
     };
@@ -237,7 +237,7 @@ async fn read_one_sibling(
                 .or_else(|| {
                     content
                         .first()
-                        .and_then(|content| content.raw.as_text())
+                        .and_then(|content| content.as_text())
                         .and_then(|text| serde_json::from_str(&text.text).ok())
                 })
                 .map(StoreReadResult::found)
@@ -411,8 +411,8 @@ mod tests {
         assert!(closed_after < Duration::from_secs(5), "{closed_after:?}");
     }
 
-    /// The same attack by the other door: rmcp 1.8's SSE reader (sse-stream
-    /// 0.2) has no cap on a line that never ends.
+    /// The same attack by the other door: an SSE `data:` line that never
+    /// reaches its newline.
     #[tokio::test]
     async fn endless_sse_line_loses_its_connection_at_the_deadline() {
         let closed_after = endless_body_closed_after("text/event-stream", "data: ").await;

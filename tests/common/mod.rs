@@ -16,7 +16,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use mcp_session::BoundedSessionManagerBuilder;
+use pali::session_cap::BoundedSessionManagerBuilder;
 use pali::{
     auth::AuthProvider,
     embedding::EmbeddingBackend,
