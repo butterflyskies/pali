@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-27
+
 ### Added
 
 - **Tag filters on `list` and `recall`** (#148): optional `tags_all` (every
@@ -31,6 +33,26 @@
 
 ### Fixed
 
+- **kube 4.2.1 (RUSTSEC-2026-0600, #434):** with the `openssl-tls` connector,
+  a configured cluster CA did not limit which server certificates were trusted.
+  The lockfile moves `kube`, `kube-client` and `kube-core` from 4.2.0 to 4.2.1,
+  and `url` to 2.5.9 (RUSTSEC-2026-0592).
+- **libz-sys 1.1.33 (RUSTSEC-2026-0544, #428):** a lockfile-only bump. The zip
+  advisories RUSTSEC-2026-0545 to 0548 stay as reasoned `deny.toml`
+  exceptions: zip arrives only through candle-core 0.10.2, with no zip features
+  enabled and none of the affected calls used, until the candle 0.11 move.
+  chrono's unmaintained notice (RUSTSEC-2026-0543) is an exception too, since
+  no fixed release exists.
+- **rustls-webpki, tokio, webpki roots, libz-sys and zstd-sys (#418):**
+  rustls-webpki 0.103.16 (distrusted intermediates), tokio 1.53.3
+  (`AsyncFd::new` I/O safety), webpki-roots / webpki-root-certs 1.0.11 (emSign
+  roots), libz-sys 1.1.31 (RUSTSEC-2026-0418) and zstd-sys 2.1.2
+  (RUSTSEC-2026-0410), at the smallest versions that clear them. Three zstd
+  advisories stay as reasoned `deny.toml` exceptions until the tantivy 0.27
+  move: RUSTSEC-2026-0391 (stream `with_context` reuse) and RUSTSEC-2026-0403
+  (legacy frames in `decompress_stream`) are unreachable, since
+  tantivy-sstable uses only the one-shot bulk API, and RUSTSEC-2026-0398
+  needs the `seekable` feature, which is not compiled.
 - **`server/discover` is answered (rmcp 3.11, lacuna/pali#421):** clients that
   probe with `server/discover` before `initialize` got HTTP 422 from rmcp 1.8
   and could not fall back. A well-formed probe now gets the server's discovery
