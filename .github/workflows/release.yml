@@ -38,12 +38,6 @@ jobs:
       is_prerelease: ${{ steps.tag-class.outputs.is_prerelease }}
       release_sha: ${{ steps.tag-binding.outputs.release_sha }}
     steps:
-      - name: Resolve release tag
-        id: release-ref
-        env:
-          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-        run: |
-          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
       # Keep the current workflow control code separate from the historical
       # release source. A manual repair of v0.17.2 must not expect new helper
       # scripts to exist in the old tag.
@@ -56,8 +50,14 @@ jobs:
       - name: Validate release tag
         id: tag-class
         env:
-          TAG_NAME: ${{ steps.release-ref.outputs.tag_name }}
+          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: .release-control/scripts/validate-release-tag.sh "$TAG_NAME"
+      - name: Resolve release tag
+        id: release-ref
+        env:
+          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
       - name: Check out release source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:

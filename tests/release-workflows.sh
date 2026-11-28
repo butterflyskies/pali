@@ -1071,6 +1071,17 @@ fi
 # bound to the remote tag's commit, serialized with that tag's push
 # publication, and publishing only through publish-image.yml's no-overwrite
 # path. The Release workflow's own manual repair still never publishes one.
+# A manual tag input names a concurrency group before any step runs, so the
+# raw input is validated before it is written to a step output.
+for workflow in release.yml repair-missing-image.yml; do
+    validate_line=$(grep -n 'name: Validate release tag' "$repo_root/.github/workflows/$workflow" | cut -d: -f1)
+    resolve_line=$(grep -n 'name: Resolve release tag' "$repo_root/.github/workflows/$workflow" | cut -d: -f1)
+    [ -n "$validate_line" ] && [ -n "$resolve_line" ] && [ "$validate_line" -lt "$resolve_line" ] || \
+        fail "$workflow writes the release tag output before validating the raw tag"
+    sed -n "${validate_line},${resolve_line}p" "$repo_root/.github/workflows/$workflow" | \
+        grep -F 'steps.release-ref.outputs.tag_name' >/dev/null && \
+        fail "$workflow validates the recorded output instead of the raw tag"
+done
 repair_image="$repo_root/.github/workflows/repair-missing-image.yml"
 assert_active "$repair_image" 'workflow_dispatch:'
 assert_active "$repair_image" "if: \${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}"
