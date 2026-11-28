@@ -239,7 +239,8 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.create-release.outputs.tag_name }}
           SOURCE_SHA: ${{ needs.create-release.outputs.release_sha }}
-        run: scripts/verify-manual-release-image.sh \
+        run: |
+          scripts/verify-manual-release-image.sh \
           ghcr.io/butterflyskies/pali "$TAG_NAME" "$SOURCE_SHA"
 
   # Undraft only after artifacts and stable release notes are complete.

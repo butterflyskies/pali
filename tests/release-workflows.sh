@@ -1096,4 +1096,17 @@ if grep -R 'butterflyskies/memory-mcp' \
     fail 'active workflow or deployment documentation still names the legacy GHCR image'
 fi
 
+# A plain-scalar run: folds its line break into a space, so a trailing
+# backslash escapes that space and glues it onto the next argument.
+# Multi-line commands use a block scalar (run: |).
+if grep -RnE '^[[:space:]]*(- )?run:[[:space:]]+[^|>[:space:]].*\\$' \
+    "$repo_root/.github/workflows" "$repo_root/.forgejo/workflows"; then
+    fail 'a plain-scalar run: ends in a backslash; use run: | for multi-line commands'
+fi
+# A folded block scalar (run: >) joins lines the same way.
+if grep -RnE '^[[:space:]]*(- )?run:[[:space:]]*>' \
+    "$repo_root/.github/workflows" "$repo_root/.forgejo/workflows"; then
+    fail 'run: > folds line breaks into spaces; use run: | for multi-line commands'
+fi
+
 echo 'release workflow tests passed'

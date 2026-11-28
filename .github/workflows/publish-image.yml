@@ -77,7 +77,8 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_SHA: ${{ inputs.source_ref }}
           TAG_NAME: ${{ inputs.tag }}
-        run: .release-control/scripts/ghcr-image-status.sh source \
+        run: |
+          .release-control/scripts/ghcr-image-status.sh source \
           "${REGISTRY}/${IMAGE}" "${TAG_NAME#v}" "$SOURCE_SHA"
       - name: Prepare image build
         if: steps.existing-image.outputs.exists == 'false'
@@ -112,7 +113,8 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PREPARED_DIGEST: ${{ steps.prepared-image.outputs.image_digest }}
           TAG_NAME: ${{ inputs.tag }}
-        run: .release-control/scripts/ghcr-image-status.sh digest \
+        run: |
+          .release-control/scripts/ghcr-image-status.sh digest \
           "${REGISTRY}/${IMAGE}" "${TAG_NAME#v}" "$PREPARED_DIGEST"
       - name: Publish verified image
         if: steps.existing-image.outputs.exists == 'false' && steps.image-status.outputs.publish == 'true'
@@ -134,7 +136,8 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PREPARED_DIGEST: ${{ steps.prepared-image.outputs.image_digest }}
           TAG_NAME: ${{ inputs.tag }}
-        run: .release-control/scripts/ghcr-image-status.sh digest \
+        run: |
+          .release-control/scripts/ghcr-image-status.sh digest \
           "${REGISTRY}/${IMAGE}" "${TAG_NAME#v}" "$PREPARED_DIGEST"
       - name: Read back existing image source binding
         if: steps.existing-image.outputs.exists == 'true'
@@ -143,5 +146,6 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_SHA: ${{ inputs.source_ref }}
           TAG_NAME: ${{ inputs.tag }}
-        run: .release-control/scripts/ghcr-image-status.sh source \
+        run: |
+          .release-control/scripts/ghcr-image-status.sh source \
           "${REGISTRY}/${IMAGE}" "${TAG_NAME#v}" "$SOURCE_SHA"
