@@ -17,6 +17,18 @@
   memory's full body. The 24 KiB page cap still applies; oversized pages split
   across `next_cursor` instead of truncating bodies.
 
+### Changed
+
+- **Release tags are SSH-signed annotated tags, created on Forgejo** (ADR-0045):
+  the Forgejo `tag-release` job signs `pali vX.Y.Z` with the `TAG_SIGNING_KEY`
+  secret, checks it against `.forgejo/allowed_signers` before pushing, and
+  reads the pushed tag back as exactly the verified tag object it created.
+  `TAG_SIGNING=none` gives annotated unsigned tags with a warning. GitHub only
+  mirrors tags, and its release workflows now publish only from a signed
+  annotated tag or a tag listed with its exact commit in
+  `release/legacy-release-tags.txt`. Existing tags, including the lightweight
+  `v0.19.0`, are unchanged and listed there.
+
 ### Fixed
 
 - **`server/discover` is answered (rmcp 3.11, lacuna/pali#421):** clients that

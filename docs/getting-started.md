@@ -99,11 +99,13 @@ download it:
 docker run -d --name pali \
   -p 8080:8080 \
   -v "$HOME/.memory-mcp:/data/repo" \
-  ghcr.io/butterflyskies/memory-mcp:latest
+  ghcr.io/butterflyskies/pali:<VERSION>
 ```
 
 The volume is required for persistence. Without it, memories disappear with
-the container.
+the container. Replace `<VERSION>` with a published full version from the
+[GitHub releases page](https://github.com/butterflyskies/pali/releases); Pali
+does not maintain a mutable `latest` image tag.
 
 ## Configure git sync
 

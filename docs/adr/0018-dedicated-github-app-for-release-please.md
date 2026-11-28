@@ -1,7 +1,7 @@
 # ADR-0018: Dedicated GitHub App for release-please
 
 ## Status
-Accepted
+Superseded by [ADR-0045](0045-forgejo-tag-authority-github-release-executor.md)
 
 ## Context
 Release-please creates and maintains a release PR on every push to main. When it uses

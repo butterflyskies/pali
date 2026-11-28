@@ -1,0 +1,10 @@
+# SSH keys trusted to sign pali release tags (git gpg.ssh.allowedSignersFile).
+# Read by scripts/create-release-tag.sh and scripts/verify-remote-release-tag.sh
+# in the tag-release job of .forgejo/workflows/ci.yml, which refuses to push a
+# tag unless the public half of secrets.TAG_SIGNING_KEY is listed here.
+#
+# Format (ssh-keygen(1) ALLOWED SIGNERS), one key per line:
+#   pali-release@lacuna.local namespaces="git" ssh-ed25519 AAAA... comment
+#
+# The release signing key, provisioned by the maintainer on 2026-11-27.
+pali-release@lacuna.local namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINIFpCvNqrCuZFqVMKm3s/LzT8oLhScoBjFL5MHkBgKj pali-release

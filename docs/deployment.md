@@ -10,13 +10,15 @@ The manifests in `deploy/k8s/` are generic and work on any cluster.
 ### 1. Build and push the image
 
 ```bash
-docker build -t YOUR_REGISTRY/memory-mcp:latest .
-docker push YOUR_REGISTRY/memory-mcp:latest
+docker build -t YOUR_REGISTRY/pali:latest .
+docker push YOUR_REGISTRY/pali:latest
 ```
 
-Or let the [GitHub Actions workflow](../.github/workflows/build.yml) do it on
-push to `main`. The workflow pushes to `ghcr.io/butterflyskies/memory-mcp`
-using the built-in `GITHUB_TOKEN` — no extra secrets needed.
+Release tags publish immutable images to `ghcr.io/butterflyskies/pali` through
+the protected [release workflow](../.github/workflows/release.yml), using its
+automatic `GITHUB_TOKEN` with job-scoped `packages: write` permission.
+Ordinary main/PR CI only validates a local `butterflyskies/pali-ci` image and
+has no package-write credential, so it cannot mutate release image tags.
 
 ### 2. Apply the manifests
 

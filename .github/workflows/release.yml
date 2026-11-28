@@ -1,38 +1,99 @@
-# Release workflow — triggered by tag push from tag-release.yml.
+# Release workflow — triggered when Forgejo's canonical tag is mirrored here.
 # Builds binaries, publishes crate + Docker image, then undrafts the release.
 name: Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing mirrored release tag to repair or republish
+        required: true
+        type: string
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+*']
 
 concurrency:
-  group: release
+  # Distinct mirrored tags need distinct durable runs. Same-tag repair retries
+  # are one idempotent release identity and may serialize together.
+  group: release-${{ github.event_name }}-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 permissions: {}
 
+env:
+  # Release tags must be SSH-signed annotated tags or listed legacy tags;
+  # scripts/verify-remote-release-tag.sh enforces it. Reusable workflows do
+  # not inherit the caller's env, so every release workflow sets it.
+  TAG_SIGNING: ssh
+
 jobs:
   create-release:
+    if: ${{ github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
     outputs:
-      tag_name: ${{ github.ref_name }}
-      is_prerelease: ${{ contains(github.ref_name, '-') }}
+      tag_name: ${{ steps.release-ref.outputs.tag_name }}
+      is_prerelease: ${{ steps.tag-class.outputs.is_prerelease }}
+      release_sha: ${{ steps.tag-binding.outputs.release_sha }}
     steps:
-      - name: Create draft release
+      - name: Resolve release tag
+        id: release-ref
+        env:
+          TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+      # Keep the current workflow control code separate from the historical
+      # release source. A manual repair of v0.17.2 must not expect new helper
+      # scripts to exist in the old tag.
+      - name: Check out release control code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          path: .release-control
+          persist-credentials: false
+      - name: Validate release tag
+        id: tag-class
+        env:
+          TAG_NAME: ${{ steps.release-ref.outputs.tag_name }}
+        run: .release-control/scripts/validate-release-tag.sh "$TAG_NAME"
+      - name: Check out release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: refs/tags/${{ steps.release-ref.outputs.tag_name }}
+          path: release-source
+          persist-credentials: false
+      - name: Verify tag matches package version
+        env:
+          TAG_NAME: ${{ steps.release-ref.outputs.tag_name }}
+        working-directory: release-source
+        run: ../.release-control/scripts/verify-release-tag.sh "$TAG_NAME"
+      - name: Bind remote tag to checked-out commit
+        id: tag-binding
+        env:
+          TAG_NAME: ${{ steps.release-ref.outputs.tag_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        working-directory: release-source
+        run: ../.release-control/scripts/verify-remote-release-tag.sh origin "$TAG_NAME" "$(git rev-parse HEAD)" "$DEFAULT_BRANCH"
+      - name: Check for existing release
+        id: release-status
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ github.ref_name }}
+          TAG_NAME: ${{ steps.release-ref.outputs.tag_name }}
+        run: .release-control/scripts/github-release-status.sh "${{ github.repository }}" "$TAG_NAME"
+      - name: Create draft release
+        if: steps.release-status.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.release-ref.outputs.tag_name }}
+          IS_PRERELEASE: ${{ steps.tag-class.outputs.is_prerelease }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          prerelease_flag=""
-          if [[ "$TAG_NAME" == *-* ]]; then
-            prerelease_flag="--prerelease"
-          fi
-          gh release create "$TAG_NAME" --draft $prerelease_flag \
-            --title "$TAG_NAME" \
-            --repo "${{ github.repository }}"
+          (cd release-source && ../.release-control/scripts/verify-remote-release-tag.sh \
+            origin "$TAG_NAME" "$(git rev-parse HEAD)" "$DEFAULT_BRANCH")
+          .release-control/scripts/create-github-draft-release.sh \
+            "${{ github.repository }}" "$TAG_NAME" "$IS_PRERELEASE"
 
   # Build release binaries with cargo-auditable and upload as release assets.
   # All binaries include the k8s feature (opt-in at runtime via --store k8s-secret).
@@ -40,6 +101,10 @@ jobs:
   # taiki-e/upload-rust-binary-action, which doesn't support it yet.
   publish-binaries:
     needs: create-release
+    environment: release
+    defaults:
+      run:
+        working-directory: release-source
     strategy:
       fail-fast: false
       matrix:
@@ -56,9 +121,17 @@ jobs:
       CARGO_INCREMENTAL: '0'
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out release control code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.create-release.outputs.tag_name }}
+          ref: ${{ github.sha }}
+          path: .release-control
+          persist-credentials: false
+      - name: Check out release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.create-release.outputs.release_sha }}
+          path: release-source
           persist-credentials: false
       - name: Install system dependencies
         if: matrix.target == 'x86_64-unknown-linux-gnu'
@@ -87,18 +160,31 @@ jobs:
               exit 1
               ;;
           esac
+      - name: Install deterministic archive tool on macOS
+        if: matrix.target == 'universal-apple-darwin'
+        run: brew install gnu-tar
       - name: Package and upload
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.create-release.outputs.tag_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           archive="pali-${TAG_NAME}-${{ matrix.target }}"
           mkdir "${archive}"
           mv pali "${archive}/"
-          tar czf "${archive}.tar.gz" "${archive}"
+          source_date_epoch=$(git show -s --format=%ct HEAD)
+          tar_command=tar
+          if [ "${{ matrix.target }}" = universal-apple-darwin ]; then
+            tar_command=gtar
+          fi
+          "$tar_command" --sort=name --mtime="@${source_date_epoch}" \
+            --owner=0 --group=0 --numeric-owner \
+            -cf - "${archive}" | gzip -n > "${archive}.tar.gz"
           shasum -a 256 "${archive}.tar.gz" > "${archive}.tar.gz.sha256"
-          gh release upload "${TAG_NAME}" "${archive}.tar.gz" "${archive}.tar.gz.sha256" \
-            --repo "${{ github.repository }}"
+          ../.release-control/scripts/verify-remote-release-tag.sh origin "$TAG_NAME" "$(git rev-parse HEAD)" "$DEFAULT_BRANCH"
+          ../.release-control/scripts/upload-release-asset-pair.sh \
+            "${{ github.repository }}" "$TAG_NAME" \
+            "${archive}.tar.gz" "${archive}.tar.gz.sha256"
 
   publish-crate:
     needs: create-release
@@ -106,43 +192,105 @@ jobs:
     uses: ./.github/workflows/publish-crate.yml
     with:
       tag: ${{ needs.create-release.outputs.tag_name }}
+      control_ref: ${{ github.sha }}
+      source_ref: ${{ needs.create-release.outputs.release_sha }}
     permissions:
       id-token: write
       contents: read
 
   publish-image:
     needs: create-release
-    if: ${{ needs.create-release.outputs.is_prerelease != 'true' }}
+    # Historical manual repair is for release metadata/assets only. It must not
+    # rebuild or move an already-published immutable image.
+    if: ${{ github.event_name != 'workflow_dispatch' && needs.create-release.outputs.is_prerelease != 'true' }}
     uses: ./.github/workflows/publish-image.yml
     with:
       tag: ${{ needs.create-release.outputs.tag_name }}
+      control_ref: ${{ github.sha }}
+      source_ref: ${{ needs.create-release.outputs.release_sha }}
     permissions:
       contents: read
       packages: write
       id-token: write
 
-  # Undraft the release after all artifacts are uploaded.
-  publish-release:
-    needs: [create-release, publish-binaries, publish-crate, publish-image]
-    if: ${{ always() && needs.create-release.result == 'success' && needs.publish-binaries.result == 'success' && (needs.publish-crate.result == 'skipped' || needs.publish-crate.result == 'success') && (needs.publish-image.result == 'skipped' || needs.publish-image.result == 'success') }}
+  # Manual repair intentionally does not mutate historical images. A stable
+  # release may become public only when its immutable full-version tag already
+  # exists; legacy images need not carry today's source label for this check.
+  verify-manual-image:
+    needs: create-release
+    if: ${{ github.event_name == 'workflow_dispatch' && needs.create-release.outputs.is_prerelease != 'true' }}
     runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      image_digest: ${{ steps.verify.outputs.image_digest }}
+    steps:
+      - name: Check out release control code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require existing immutable release image
+        id: verify
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.create-release.outputs.tag_name }}
+          SOURCE_SHA: ${{ needs.create-release.outputs.release_sha }}
+        run: scripts/verify-manual-release-image.sh \
+          ghcr.io/butterflyskies/pali "$TAG_NAME" "$SOURCE_SHA"
+
+  # Undraft only after artifacts and stable release notes are complete.
+  publish-release:
+    needs: [create-release, publish-binaries, publish-crate, publish-image, verify-manual-image, update-release-notes]
+    if: ${{ always() && needs.create-release.result == 'success' && needs.publish-binaries.result == 'success' && (needs.publish-crate.result == 'skipped' || needs.publish-crate.result == 'success') && ((needs.create-release.outputs.is_prerelease == 'true' && needs.publish-image.result == 'skipped' && needs.verify-manual-image.result == 'skipped') || (needs.create-release.outputs.is_prerelease != 'true' && github.event_name != 'workflow_dispatch' && needs.publish-image.result == 'success' && needs.verify-manual-image.result == 'skipped') || (needs.create-release.outputs.is_prerelease != 'true' && github.event_name == 'workflow_dispatch' && needs.publish-image.result == 'skipped' && needs.verify-manual-image.result == 'success')) && ((needs.create-release.outputs.is_prerelease == 'true' && needs.update-release-notes.result == 'skipped') || (needs.create-release.outputs.is_prerelease != 'true' && needs.update-release-notes.result == 'success')) }}
+    runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
+      packages: read
     steps:
+      - name: Check out release control code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          path: .release-control
+          persist-credentials: false
+      - name: Check out release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.create-release.outputs.release_sha }}
+          path: release-source
+          persist-credentials: false
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.create-release.outputs.tag_name }}
+          EXPECTED_IMAGE_DIGEST: ${{ needs.verify-manual-image.outputs.image_digest }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
+          (cd release-source && ../.release-control/scripts/verify-remote-release-tag.sh \
+            origin "$TAG_NAME" "$(git rev-parse HEAD)" "$DEFAULT_BRANCH")
+          if [ "${{ github.event_name }}" = workflow_dispatch ] && \
+             [ "${{ needs.create-release.outputs.is_prerelease }}" != true ]; then
+            .release-control/scripts/ghcr-image-status.sh require-digest \
+              ghcr.io/butterflyskies/pali "${TAG_NAME#v}" "$EXPECTED_IMAGE_DIGEST"
+          fi
           gh release edit "$TAG_NAME" \
             --draft=false \
             --repo "${{ github.repository }}"
 
   update-release-notes:
-    needs: [create-release, publish-release]
-    if: ${{ needs.create-release.outputs.is_prerelease != 'true' }}
+    needs: [create-release, publish-binaries, publish-crate, publish-image, verify-manual-image]
+    if: ${{ always() && needs.create-release.outputs.is_prerelease != 'true' && needs.create-release.result == 'success' && needs.publish-binaries.result == 'success' && needs.publish-crate.result == 'success' && ((github.event_name != 'workflow_dispatch' && needs.publish-image.result == 'success' && needs.verify-manual-image.result == 'skipped') || (github.event_name == 'workflow_dispatch' && needs.publish-image.result == 'skipped' && needs.verify-manual-image.result == 'success')) }}
     uses: ./.github/workflows/update-release-notes.yml
     with:
       tag: ${{ needs.create-release.outputs.tag_name }}
+      control_ref: ${{ github.sha }}
+      source_ref: ${{ needs.create-release.outputs.release_sha }}
     permissions:
       contents: write

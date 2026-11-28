@@ -1,0 +1,3 @@
+# One-time audited legacy image identities. These tags predate reliable source
+# labels; changes require ordinary source review plus an external digest readback.
+v0.17.2 sha256:7238086b580b53b4b751d6e9f19bbdab7f4b9e69964a05fe7df242623e6dc226

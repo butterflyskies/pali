@@ -1,0 +1,44 @@
+# Release tags created before Pali's tags were SSH-signed by the Forgejo
+# release key. scripts/verify-remote-release-tag.sh accepts a tag listed here
+# only when the remote tag resolves to exactly the listed commit; any other
+# release tag must be an annotated tag object signed by a key in
+# .forgejo/allowed_signers. Never add a new release here: entries are the
+# audited historical set, read from `git ls-remote --tags` on the GitHub
+# mirror and on Forgejo (identical where both hold the tag; v0.19.0 exists
+# only on GitHub). Format: <tag> <peeled commit sha>.
+#
+# Lightweight tags.
+v0.1.2 a0301d63bc5c3c35a170d473fbf4eff16b28dda2
+v0.1.3 1c921f2438a8f338ebbc3308d6e6ecdcf58ad99e
+v0.1.4 a167bbb9360c143e5228d581a9927198db1bf11c
+v0.1.5 71f9015495f2be6441f6a35e3431987640751cfe
+v0.2.0 3c87fe8c8d8404bacb6cccb9334f4b00025fa726
+v0.3.0 7378e58727979a98b967e1e90a90257620d039ab
+v0.4.0 268c89da7c61eaf6398de58e55e80e7efd93b5a5
+v0.5.0 a2afec2b5583fbffc9cbd6fb8369039eb9821b00
+v0.5.1 e4cd81c4d1c6d5dbe47d5062a4f74b2d84ccada8
+v0.6.0 07d2bb9d2e5da36b1f0fd78d7ded9f63e8306dbc
+v0.6.1 255f26086846c7a8adf50f492ecc8a82e86e3a89
+v0.7.0 c0c92b7c6b47d5d2c8f48a0c51e33dfdfa491b15
+v0.7.1 b7abd6d830ca45bdf66ec6308308ad36c98eba7b
+v0.8.0 2aa082da4cd762de9639fab132c89cfea0910cce
+v0.9.0 ecd351493ef482e44facfa90cbed8bd42f1f70d1
+v0.10.0 155763b412b95572c699b42a4314980900d0c532
+v0.10.1 9f561db0c4fb9fb030da9f5fe89819deb7d08fce
+v0.11.0 807a345a827adb6f98d2f07ebc5672d114f7aa3e
+v0.11.1 b26d36be1f89edb5de441ab6a6b29828e18d5852
+v0.12.0 c051b913a860ff6da64c34ce46ffe021feee6a3b
+v0.12.1 7debfd84f631b05d8e02173d6f3e536133080ee1
+v0.13.0 364d0956da608eb50d016f407c2c903a0fc98520
+v0.13.1 e23795e808bd5d4ddbfe6568946118d40cb481fd
+v0.13.2 1265890ae3373f25d5d8ac733be93536485c8127
+v0.13.3 00d75716381b911493fc0b42305ff191cf5dd944
+v0.14.0 24b04b04d5a74454f1d850b91c912ad5b7308205
+v0.15.0 04d9981efa3e5045c2e7c376269539c13f9c1566
+v0.16.0 a2df6e6ed96ca8d43f694221a0527a3ab84424df
+v0.17.0 7f7932f0ea542026c6ec4fde57abdeb613f26824
+v0.18.0 c16a4dd36a2ff847c2f3d48d3b5df23cf5c5131a
+v0.19.0 d2241c23f14d613b8356b45763cfb5dba43ef693
+# Annotated tags signed by keys that are not release signers.
+v0.17.1 c7faae65946aaa3fe3a4de5fae88c397dd8db45c
+v0.17.2 20454674c76d14955ab1b52af66c5adb5ef65557

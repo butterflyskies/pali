@@ -7,7 +7,10 @@ on:
   pull_request:
 
 concurrency:
-  group: forgejo-ci-${{ forgejo.ref }}
+  # Distinct canonical commits must never replace one another while pending;
+  # each can carry a different release boundary. Duplicate event+SHA delivery
+  # is equivalent and may share a slot.
+  group: forgejo-ci-${{ forgejo.event_name }}-${{ forgejo.sha }}
   cancel-in-progress: ${{ forgejo.event_name == 'pull_request' }}
 
 permissions: {}
@@ -37,8 +40,11 @@ jobs:
       - name: Check out repository
         uses: https://data.forgejo.org/actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
+      # openssh-client: tests/release-workflows.sh signs and verifies throwaway
+      # release tags with ssh-keygen. jq: the release scripts under test parse
+      # registry and release API responses with it.
       - name: Install system dependencies
-        run: apt-get update && apt-get install -y libdbus-1-dev pkg-config
+        run: apt-get update && apt-get install -y libdbus-1-dev pkg-config openssh-client jq
 
       - name: Install Rust toolchain
         uses: https://github.com/dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-03-27)
@@ -48,6 +54,9 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt -- --check
+
+      - name: Validate release workflows
+        run: tests/release-workflows.sh
 
       - name: Lint default features
         run: cargo clippy --workspace -- -D warnings
@@ -72,3 +81,186 @@ jobs:
         uses: https://github.com/EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check
+
+  release-boundary:
+    # Forgejo is the sole tag authority. Run only after canonical main passed
+    # its full Forgejo CI suite; mirrored tags trigger GitHub publication.
+    if: ${{ forgejo.event_name == 'push' && forgejo.ref == 'refs/heads/main' }}
+    needs: linux
+    runs-on: docker
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.tag.outputs.release }}
+      tag_name: ${{ steps.tag.outputs.tag_name }}
+      release_commit: ${{ steps.verified-boundary.outputs.release_commit }}
+    steps:
+      - name: Check out canonical main
+        uses: https://data.forgejo.org/actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create tag for package version change
+        id: tag
+        # The local boundary tag is annotated (unsigned) and needs a tagger.
+        env:
+          GIT_COMMITTER_NAME: pali-release[bot]
+          GIT_COMMITTER_EMAIL: pali-release@lacuna.local
+        run: scripts/tag-release-on-version-change.sh "${{ forgejo.event.before }}"
+
+      # Reconciliation can select an ancestor of the newly green main head.
+      # Re-run the complete release gate against that exact tree before its
+      # local tag is allowed to leave the runner.
+      - name: Check out exact release boundary
+        if: steps.tag.outputs.release == 'true'
+        env:
+          TAG_NAME: ${{ steps.tag.outputs.tag_name }}
+        run: git checkout --detach "refs/tags/${TAG_NAME}"
+
+      - name: Install release-boundary system dependencies
+        if: steps.tag.outputs.release == 'true'
+        run: apt-get update && apt-get install -y libdbus-1-dev pkg-config openssh-client jq
+
+      - name: Install release-boundary Rust toolchain
+        if: steps.tag.outputs.release == 'true'
+        uses: https://github.com/dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-03-27)
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Check release-boundary formatting
+        if: steps.tag.outputs.release == 'true'
+        run: cargo fmt -- --check
+
+      - name: Validate release-boundary workflows
+        if: steps.tag.outputs.release == 'true'
+        run: tests/release-workflows.sh
+
+      - name: Lint release-boundary default features
+        if: steps.tag.outputs.release == 'true'
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Lint release-boundary all features
+        if: steps.tag.outputs.release == 'true'
+        run: cargo clippy --workspace --all-features -- -D warnings
+
+      - name: Install release-boundary cargo-nextest
+        if: steps.tag.outputs.release == 'true'
+        run: |
+          curl -fsSL "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.136/cargo-nextest-0.9.136-x86_64-unknown-linux-gnu.tar.gz" \
+            -o /tmp/cargo-nextest.tar.gz
+          echo "a098eed56f2dd88c7fdca1e554a6b99fa1ffbd2a7a1c41b865700112981f6f52  /tmp/cargo-nextest.tar.gz" | sha256sum -c -
+          tar xzf /tmp/cargo-nextest.tar.gz -C /usr/local/bin
+
+      - name: Test release-boundary default features
+        if: steps.tag.outputs.release == 'true'
+        run: cargo nextest run --workspace --no-fail-fast
+
+      - name: Test release-boundary all features
+        if: steps.tag.outputs.release == 'true'
+        run: cargo nextest run --workspace --no-fail-fast --all-features
+
+      - name: Audit release-boundary dependencies
+        if: steps.tag.outputs.release == 'true'
+        uses: https://github.com/EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+
+      # This receipt is deliberately static workflow code, not a repository
+      # helper. It binds the privileged job to the exact canonical-main tree
+      # that just completed every release-boundary gate above.
+      - name: Bind verified release boundary
+        id: verified-boundary
+        if: steps.tag.outputs.release == 'true'
+        env:
+          TAG_NAME: ${{ steps.tag.outputs.tag_name }}
+          PROPOSED_COMMIT: ${{ steps.tag.outputs.release_commit }}
+          CANONICAL_MAIN_SHA: ${{ forgejo.sha }}
+        run: |
+          set -eu
+          printf '%s\n' "$PROPOSED_COMMIT" | grep -Eq '^[0-9a-f]{40}$'
+          printf '%s\n' "$CANONICAL_MAIN_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          tested_commit=$(git rev-parse HEAD)
+          tag_commit=$(git rev-parse "refs/tags/${TAG_NAME}^{commit}")
+          [ "$tested_commit" = "$tag_commit" ]
+          [ "$tested_commit" = "$PROPOSED_COMMIT" ]
+          git merge-base --is-ancestor "$tested_commit" "$CANONICAL_MAIN_SHA"
+          echo "release_commit=${tested_commit}" >> "$GITHUB_OUTPUT"
+
+  tag-release:
+    needs: release-boundary
+    if: ${{ needs.release-boundary.outputs.release == 'true' }}
+    runs-on: docker
+    permissions:
+      contents: write
+    env:
+      # Release tags are annotated and SSH-signed; the signature must verify
+      # against .forgejo/allowed_signers at the release commit. "none" makes
+      # annotated unsigned tags (with a warning); anything else fails. There
+      # is no fallback from ssh to unsigned: with no TAG_SIGNING_KEY secret,
+      # or no matching key in allowed_signers, the job fails before pushing.
+      TAG_SIGNING: ssh
+      GIT_COMMITTER_NAME: pali-release[bot]
+      GIT_COMMITTER_EMAIL: pali-release@lacuna.local
+    steps:
+      - name: Check out only the verified release commit
+        uses: https://data.forgejo.org/actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.release-boundary.outputs.release_commit }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install tag-signing tools
+        run: command -v ssh-keygen >/dev/null || { apt-get update && apt-get install -y --no-install-recommends openssh-client; }
+
+      - name: Push verified signed release tag
+        env:
+          TAG_NAME: ${{ needs.release-boundary.outputs.tag_name }}
+          RELEASE_COMMIT: ${{ needs.release-boundary.outputs.release_commit }}
+          TAG_PUSH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_SIGNING_KEY: ${{ secrets.TAG_SIGNING_KEY }}
+        run: |
+          set -eu
+          printf '%s\n' "$TAG_NAME" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9a-z-]+(\.[0-9a-z-]+)*)?$'
+          printf '%s\n' "$RELEASE_COMMIT" | grep -Eq '^[0-9a-f]{40}$'
+          [ "$(git rev-parse HEAD)" = "$RELEASE_COMMIT" ]
+          package_version=$(awk '
+            /^\[package\][[:space:]]*$/ { in_package = 1; next }
+            /^\[/ { in_package = 0 }
+            in_package && /^version[[:space:]]*=/ {
+              line = $0
+              sub(/^[^=]*=[[:space:]]*"/, "", line)
+              sub(/".*/, "", line)
+              print line
+              exit
+            }
+          ' Cargo.toml)
+          [ "$TAG_NAME" = "v${package_version}" ]
+          scripts/create-release-tag.sh "$TAG_NAME" "$RELEASE_COMMIT"
+          unset TAG_SIGNING_KEY
+          [ "$(git cat-file -t "refs/tags/${TAG_NAME}")" = tag ]
+          [ "$(git rev-parse "refs/tags/${TAG_NAME}^{commit}")" = "$RELEASE_COMMIT" ]
+          tag_object=$(git rev-parse "refs/tags/${TAG_NAME}")
+          auth_header=$(printf 'x-access-token:%s' "$TAG_PUSH_TOKEN" | base64 | tr -d '\n')
+          git -c "http.extraHeader=Authorization: Basic ${auth_header}" \
+            fetch --no-tags origin \
+            '+refs/heads/main:refs/release-authority/main'
+          git merge-base --is-ancestor \
+            "$RELEASE_COMMIT" refs/release-authority/main
+          git -c "http.extraHeader=Authorization: Basic ${auth_header}" \
+            push origin "refs/tags/${TAG_NAME}:refs/tags/${TAG_NAME}"
+          # Read back what Forgejo now holds: exactly the tag object just
+          # created, for this name, peeling to the release commit, whose
+          # signature verifies.
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader \
+            GIT_CONFIG_VALUE_0="Authorization: Basic ${auth_header}" \
+            scripts/verify-remote-release-tag.sh origin "$TAG_NAME" "$RELEASE_COMMIT" main "$tag_object"
+          unset auth_header
+
+      - name: Summary
+        env:
+          TAG_NAME: ${{ needs.release-boundary.outputs.tag_name }}
+        run: |
+          echo "### Release ${TAG_NAME}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Canonical annotated tag (signing: ${TAG_SIGNING}) created and read back; the GitHub mirror owns public release publication." >> "$GITHUB_STEP_SUMMARY"

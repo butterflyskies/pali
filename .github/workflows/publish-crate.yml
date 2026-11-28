@@ -8,24 +8,56 @@ on:
       tag:
         required: true
         type: string
+      control_ref:
+        required: true
+        type: string
+      source_ref:
+        required: true
+        type: string
 
 permissions:
   id-token: write
   contents: read
+
+env:
+  # Release tags must be SSH-signed annotated tags or listed legacy tags;
+  # scripts/verify-remote-release-tag.sh enforces it. Reusable workflows do
+  # not inherit the caller's env, so every release workflow sets it.
+  TAG_SIGNING: ssh
 
 jobs:
   publish-crate:
     runs-on: ubuntu-latest
     environment: release
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out release control code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.control_ref }}
+          path: .release-control
+          persist-credentials: false
+      - name: Check out release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: release-source
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master (2026-03-27)
         with:
           toolchain: stable
+      - name: Check exact crates.io version
+        id: crate-status
+        env:
+          TAG_NAME: ${{ inputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        working-directory: release-source
+        run: |
+          ../.release-control/scripts/verify-remote-release-tag.sh origin "$TAG_NAME" "$(git rev-parse HEAD)" "$DEFAULT_BRANCH"
+          cargo package --no-verify
+          ../.release-control/scripts/crates-io-publish-status.sh \
+            "$TAG_NAME" "target/package/pali-${TAG_NAME#v}.crate"
       - name: Authenticate with crates.io
+        if: steps.crate-status.outputs.publish == 'true'
         uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
         id: auth
       # --no-verify: skip the verification rebuild. CI already built and tested;
@@ -35,6 +67,12 @@ jobs:
       # between commit and release cause --locked to fail. The lockfile is
       # not shipped in the published crate anyway.
       - name: Publish crate
-        run: cargo publish --no-verify
+        if: steps.crate-status.outputs.publish == 'true'
+        working-directory: release-source
+        run: |
+          ../.release-control/scripts/verify-remote-release-tag.sh origin "$TAG_NAME" "$(git rev-parse HEAD)" "$DEFAULT_BRANCH"
+          cargo publish --no-verify
         env:
+          TAG_NAME: ${{ inputs.tag }}
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}

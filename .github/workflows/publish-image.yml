@@ -8,10 +8,20 @@ on:
       tag:
         required: true
         type: string
+      control_ref:
+        required: true
+        type: string
+      source_ref:
+        required: true
+        type: string
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: butterflyskies/memory-mcp
+  IMAGE: butterflyskies/pali
+  # Release tags must be SSH-signed annotated tags or listed legacy tags;
+  # scripts/verify-remote-release-tag.sh enforces it. Reusable workflows do
+  # not inherit the caller's env, so every release workflow sets it.
+  TAG_SIGNING: ssh
 
 permissions:
   contents: read
@@ -21,10 +31,19 @@ permissions:
 jobs:
   publish-image:
     runs-on: ubuntu-latest
+    environment: release
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out release control code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.control_ref }}
+          path: .release-control
+          persist-credentials: false
+      - name: Check out release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: release-source
           persist-credentials: false
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
       - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
@@ -32,21 +51,97 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install OCI publisher
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+      - name: Verify release tag binding before image reconciliation
+        env:
+          TAG_NAME: ${{ inputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        working-directory: release-source
+        run: ../.release-control/scripts/verify-remote-release-tag.sh origin "$TAG_NAME" "$(git rev-parse HEAD)" "$DEFAULT_BRANCH"
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE }}
+          # Stable SemVer otherwise implicitly emits the mutable `latest` tag.
+          flavor: latest=false
           tags: |
             type=semver,pattern={{version}},value=${{ inputs.tag }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.tag }}
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+          labels: |
+            org.opencontainers.image.revision=${{ inputs.source_ref }}
+      - name: Check for existing immutable image
+        id: existing-image
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ inputs.source_ref }}
+          TAG_NAME: ${{ inputs.tag }}
+        run: .release-control/scripts/ghcr-image-status.sh source \
+          "${REGISTRY}/${IMAGE}" "${TAG_NAME#v}" "$SOURCE_SHA"
+      - name: Prepare image build
+        if: steps.existing-image.outputs.exists == 'false'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          context: release-source
+          # One fixed archive reference avoids an ambiguous multi-reference OCI
+          # index; the verified publication step maps it to every public tag.
+          tags: pali-release:prepared
           labels: ${{ steps.meta.outputs.labels }}
           provenance: true
           sbom: true
+          outputs: type=oci,dest=${{ runner.temp }}/pali-image.tar
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Verify release tag binding at publication boundary
+        if: steps.existing-image.outputs.exists == 'false'
+        id: prepared-image
+        env:
+          TAG_NAME: ${{ inputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        working-directory: release-source
+        run: |
+          ../.release-control/scripts/verify-oci-release-archive.sh \
+            "${{ runner.temp }}/pali-image.tar" prepared
+          ../.release-control/scripts/verify-remote-release-tag.sh origin "$TAG_NAME" "$(git rev-parse HEAD)" "$DEFAULT_BRANCH"
+      - name: Check immutable GHCR tag
+        if: steps.existing-image.outputs.exists == 'false'
+        id: image-status
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREPARED_DIGEST: ${{ steps.prepared-image.outputs.image_digest }}
+          TAG_NAME: ${{ inputs.tag }}
+        run: .release-control/scripts/ghcr-image-status.sh digest \
+          "${REGISTRY}/${IMAGE}" "${TAG_NAME#v}" "$PREPARED_DIGEST"
+      - name: Publish verified image
+        if: steps.existing-image.outputs.exists == 'false' && steps.image-status.outputs.publish == 'true'
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          printf '%s\n' "$IMAGE_TAGS" | while IFS= read -r image; do
+            [ -n "$image" ] || continue
+            skopeo copy --all \
+              --preserve-digests \
+              --authfile "$HOME/.docker/config.json" \
+              "oci-archive:${{ runner.temp }}/pali-image.tar:prepared" \
+              "docker://$image"
+          done
+      - name: Read back immutable GHCR tag
+        if: steps.existing-image.outputs.exists == 'false'
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREPARED_DIGEST: ${{ steps.prepared-image.outputs.image_digest }}
+          TAG_NAME: ${{ inputs.tag }}
+        run: .release-control/scripts/ghcr-image-status.sh digest \
+          "${REGISTRY}/${IMAGE}" "${TAG_NAME#v}" "$PREPARED_DIGEST"
+      - name: Read back existing image source binding
+        if: steps.existing-image.outputs.exists == 'true'
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ inputs.source_ref }}
+          TAG_NAME: ${{ inputs.tag }}
+        run: .release-control/scripts/ghcr-image-status.sh source \
+          "${REGISTRY}/${IMAGE}" "${TAG_NAME#v}" "$SOURCE_SHA"
