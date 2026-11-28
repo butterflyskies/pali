@@ -4,6 +4,18 @@ set -eu
 
 tag_name=${1:?usage: validate-release-tag.sh TAG_NAME}
 
+# A tag is exactly one line. The line-oriented match below accepts any input
+# with one matching line, and callers use the raw input for concurrency groups.
+newline='
+'
+carriage_return=$(printf '\r')
+case "$tag_name" in
+    *"$newline"* | *"$carriage_return"*)
+        echo 'invalid release tag: contains a line break' >&2
+        exit 1
+        ;;
+esac
+
 # Pali release tags are strict lowercase SemVer without build metadata. OCI
 # tags cannot represent `+` reversibly, and GitHub concurrency keys fold case;
 # a canonical lowercase dialect avoids both alias classes.

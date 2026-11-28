@@ -1,0 +1,94 @@
+# Publish the immutable GHCR image for an existing stable release tag whose
+# push publication never produced one. The Release workflow's manual repair
+# never creates or moves an image; this entry point only creates an absent
+# one. publish-image.yml re-verifies the tag binding at its publication
+# boundary and refuses to overwrite an existing full-version tag, so a run
+# against a release that already has its image publishes nothing.
+name: Repair Missing Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing mirrored stable release tag whose image is missing
+        required: true
+        type: string
+
+concurrency:
+  # The push publication identity for the same tag, so this run never races
+  # that tag's own publish-image job.
+  group: release-push-${{ inputs.tag }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  # Release tags must be SSH-signed annotated tags or listed legacy tags;
+  # scripts/verify-remote-release-tag.sh enforces it. Reusable workflows do
+  # not inherit the caller's env, so every release workflow sets it.
+  TAG_SIGNING: ssh
+
+jobs:
+  resolve-release:
+    if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag_name: ${{ steps.release-ref.outputs.tag_name }}
+      release_sha: ${{ steps.tag-binding.outputs.release_sha }}
+    steps:
+      - name: Check out release control code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          path: .release-control
+          persist-credentials: false
+      - name: Validate release tag
+        id: tag-class
+        env:
+          TAG_NAME: ${{ inputs.tag }}
+        run: .release-control/scripts/validate-release-tag.sh "$TAG_NAME"
+      - name: Resolve release tag
+        id: release-ref
+        env:
+          TAG_NAME: ${{ inputs.tag }}
+        run: |
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+      - name: Refuse prerelease tags
+        if: steps.tag-class.outputs.is_prerelease == 'true'
+        env:
+          TAG_NAME: ${{ steps.release-ref.outputs.tag_name }}
+        run: |
+          echo "$TAG_NAME is a prerelease; prereleases publish no image" >&2
+          exit 1
+      - name: Check out release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: refs/tags/${{ steps.release-ref.outputs.tag_name }}
+          path: release-source
+          persist-credentials: false
+      - name: Verify tag matches package version
+        env:
+          TAG_NAME: ${{ steps.release-ref.outputs.tag_name }}
+        working-directory: release-source
+        run: ../.release-control/scripts/verify-release-tag.sh "$TAG_NAME"
+      - name: Bind remote tag to checked-out commit
+        id: tag-binding
+        env:
+          TAG_NAME: ${{ steps.release-ref.outputs.tag_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        working-directory: release-source
+        run: ../.release-control/scripts/verify-remote-release-tag.sh origin "$TAG_NAME" "$(git rev-parse HEAD)" "$DEFAULT_BRANCH"
+
+  publish-image:
+    needs: resolve-release
+    uses: ./.github/workflows/publish-image.yml
+    with:
+      tag: ${{ needs.resolve-release.outputs.tag_name }}
+      control_ref: ${{ github.sha }}
+      source_ref: ${{ needs.resolve-release.outputs.release_sha }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write

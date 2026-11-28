@@ -22,6 +22,14 @@ assert_contains() {
     grep -F -- "$text" "$file" >/dev/null || fail "$file lacks: $text"
 }
 
+# Requires a whole line, leading indentation aside, to equal the text, so
+# neither a commented-out key nor a trailing comment can satisfy it.
+assert_active() {
+    file=$1
+    text=$2
+    sed 's/^[[:space:]]*//' "$file" | grep -Fx -- "$text" >/dev/null || fail "$file lacks active line: $text"
+}
+
 assert_output() {
     file=$1
     text=$2
@@ -162,6 +170,21 @@ for invalid in v01.2.3 v1.02.3 v1.2.03 v1.2.3-alpha..1 v1.2.3-alpha. v1.2.3+buil
     fi
 done
 "$repo_root/scripts/validate-release-tag.sh" v1.2.3-alpha-01
+# A tag is one line. A workflow input carrying a valid tag on one of several
+# lines must not validate: the raw input names concurrency groups and step
+# outputs before anything else reads it.
+newline='
+'
+carriage_return=$(printf '\r')
+for invalid in "v0.20.0${newline}tag_name=v0.20.0" "x${newline}v0.20.0" "v0.20.0${newline}" \
+    "v0.20.0${carriage_return}"; do
+    multiline_output="$tmp_dir/multiline.out"
+    : > "$multiline_output"
+    if GITHUB_OUTPUT="$multiline_output" "$repo_root/scripts/validate-release-tag.sh" "$invalid" 2>/dev/null; then
+        fail 'a release tag containing a line break was accepted'
+    fi
+    [ ! -s "$multiline_output" ] || fail 'a rejected release tag wrote step output'
+done
 
 # Release order follows SemVer, including numeric prerelease identifiers and
 # the rule that a stable version follows every prerelease of the same core.
@@ -1044,6 +1067,24 @@ assert_contains "$repo_root/.github/workflows/update-release-notes.yml" 'ref: ${
 if grep -R -F 'ref: ${{ inputs.tag }}' "$repo_root/.github/workflows" >/dev/null; then
     fail 'a release source checkout can still be shadowed by a same-named branch'
 fi
+# Missing-image repair is a separate manual entry point: default branch only,
+# bound to the remote tag's commit, serialized with that tag's push
+# publication, and publishing only through publish-image.yml's no-overwrite
+# path. The Release workflow's own manual repair still never publishes one.
+repair_image="$repo_root/.github/workflows/repair-missing-image.yml"
+assert_active "$repair_image" 'workflow_dispatch:'
+assert_active "$repair_image" "if: \${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}"
+assert_active "$repair_image" 'group: release-push-${{ inputs.tag }}'
+assert_active "$repair_image" 'ref: refs/tags/${{ steps.release-ref.outputs.tag_name }}'
+assert_active "$repair_image" 'run: ../.release-control/scripts/verify-remote-release-tag.sh origin "$TAG_NAME" "$(git rev-parse HEAD)" "$DEFAULT_BRANCH"'
+assert_active "$repair_image" "if: steps.tag-class.outputs.is_prerelease == 'true'"
+assert_active "$repair_image" 'uses: ./.github/workflows/publish-image.yml'
+assert_active "$repair_image" 'source_ref: ${{ needs.resolve-release.outputs.release_sha }}'
+if grep -E '^[[:space:]]+(push|pull_request|workflow_call|schedule):' "$repair_image" >/dev/null; then
+    fail 'missing-image repair has a trigger other than workflow_dispatch'
+fi
+[ "$(grep -c 'docker/build-push-action@\|skopeo copy' "$repair_image")" -eq 0 ] || \
+    fail 'missing-image repair publishes outside publish-image.yml'
 for workflow in publish-crate.yml publish-image.yml update-release-notes.yml; do
     assert_contains "$repo_root/.github/workflows/$workflow" 'scripts/verify-remote-release-tag.sh'
 done

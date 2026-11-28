@@ -105,6 +105,17 @@ digest only for named historical images that predate source labels. The
 preflight emits that verified digest and the undraft boundary requires the
 same digest again; mere tag existence is never sufficient.
 
+A stable release whose push publication failed before its image was pushed is
+recovered in two manual steps. The `Repair Missing Image` workflow runs only
+from the default branch, binds the requested tag to its remote commit with the
+same checks as the release workflow, refuses prereleases, and calls the same
+`publish-image.yml` the push path uses. That workflow re-verifies the binding
+at its publication boundary and never overwrites an existing full-version tag,
+so a run against a release that already has its image publishes nothing. The
+run shares the push publication's concurrency identity for that tag, so it
+cannot race the push run. Manual repair of the release itself runs only after
+that workflow succeeds, proceeds as above, and still never mutates an image.
+
 Binary archives use a stable member order, release-commit timestamp, numeric
 ownership, and timestamp-free gzip header. Existing archive/checksum pairs are
 preserved only when internally valid and byte-identical to the freshly prepared
